@@ -362,6 +362,8 @@ void pmdp_splitting_flush(struct vm_area_struct *vma, unsigned long address,
 #define pmd_write(pmd)		pte_write(pmd_pte(pmd))
 
 #define pmd_mkhuge(pmd)		(__pmd(pmd_val(pmd) & ~PMD_TABLE_BIT))
+#define pmd_mkhuge_normal(pmd)	pmd_mkhuge(pmd | PROT_SECT_NORMAL | PMD_SECT_NG | PMD_SECT_USER)
+#define pmd_mkhuge_device(pmd)	pmd_mkhuge(pmd | PROT_SECT_DEVICE_nGnRE | PMD_SECT_NG | PMD_SECT_USER)
 
 #define pmd_pfn(pmd)		(((pmd_val(pmd) & PMD_MASK) & PHYS_MASK) >> PAGE_SHIFT)
 #define pfn_pmd(pfn,prot)	(__pmd(((phys_addr_t)(pfn) << PAGE_SHIFT) | pgprot_val(prot)))

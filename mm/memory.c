@@ -1245,6 +1245,14 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 				}
 #endif
 				split_huge_page_pmd(vma, addr, pmd);
+			} else if (vma->vm_flags & VM_PFNMAP) {
+				/*
+				 * if the VM_PFNMAP is set, indicate that the
+				 * huge page is directly mapped to a physical
+				 * address, just clear the pmd entry
+				 */
+				pmdp_get_and_clear(tlb->mm, addr, pmd);
+				goto next;
 			} else if (zap_huge_pmd(tlb, vma, pmd, addr))
 				goto next;
 			/* fall through */

@@ -1,0 +1,17 @@
+menu "Minos"
+
+config MINOS
+	bool "Enable Minos Hypervisor driver"
+	---help---
+	  Enable support for Minos hyperviosr
+
+if MINOS
+
+config HYPERVISOR_MINOS_DRIVER
+	bool "Minos driver to commuicate the hypervisor"
+	depends on ARM64
+	default n
+
+endif
+
+endmenu

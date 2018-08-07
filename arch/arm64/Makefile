@@ -76,6 +76,7 @@ core-$(CONFIG_XEN) += arch/arm64/xen/
 core-$(CONFIG_CRYPTO) += arch/arm64/crypto/
 libs-y		:= arch/arm64/lib/ $(libs-y)
 core-$(CONFIG_EFI_STUB) += $(objtree)/drivers/firmware/efi/libstub/lib.a
+core-y		   += arch/arm64/minos/
 
 # Default target when executing plain make
 KBUILD_IMAGE	:= Image.gz
