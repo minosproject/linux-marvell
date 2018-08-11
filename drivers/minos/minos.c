@@ -41,7 +41,22 @@
 #include <linux/mman.h>
 #include <asm/pgtable-types.h>
 
+#include <net/sock.h>
+#include <linux/netlink.h>
+#include <linux/skbuff.h>
+
+struct vm_event {
+	void *handler;
+} __attribute__((__packed__));
+
 #define	MINOS_VM_MAJOR		(278)
+#define NETLINK_MVM		(29)
+
+#define EVENT_PAGE_NR	((sizeof(struct vm_event) * MVM_MAX_EVENT) >> PAGE_SHIFT)
+
+struct vm_event *vm_event_table;
+
+static struct sock *mvm_sock;
 
 static int create_vm_device(int vmid, struct vm_info *vm_info);
 
@@ -193,7 +208,7 @@ static int destroy_vm(int vmid)
 	if (vm == NULL)
 		return -ENOENT;
 
-	if (atomic_cmpxchg(&vm->opened, 0, 1)) {
+	if (atomic_read(&vm->opened)) {
 		pr_err("vm%d has been opened, release it first\n", vm->vmid);
 		return -EBUSY;
 	}
@@ -245,10 +260,89 @@ static int vm_open(struct inode *inode, struct file *filp)
 	return 0;
 }
 
+static void send_vm_event(int pid, unsigned long arg)
+{
+	struct nlmsghdr *nlh;
+	struct sk_buff *msg_skb;
+	void *data;
+	int ret;
+
+	pr_debug("send 0x%lx to pid-%d\n", arg, pid);
+
+	msg_skb = nlmsg_new(sizeof(void *), GFP_KERNEL);
+	if (msg_skb)
+		return;
+
+	nlh = nlmsg_put(msg_skb, GFP_KERNEL, 0, 0, sizeof(void *), 0);
+	if (!nlh)
+		return;
+
+	data = nlmsg_data(nlh);
+	memcpy(data, (void *)&arg, sizeof(unsigned long));
+
+	/*
+	 * TBD - should get a spin lock here ?
+	 */
+	ret = nlmsg_unicast(mvm_sock, msg_skb, pid);
+	if (ret)
+		pr_err("send 0x%lx to pid-%d failed\n", arg, pid);
+}
+
+static irqreturn_t vm_event_handler(int irq, void *data)
+{
+	struct vm_event *event;
+	struct vm_device *vm = (struct vm_device *)data;
+
+	if (!vm)
+		return IRQ_NONE;
+
+	if ((irq < MVM_EVENT_ID_BASE) || (irq >= MVM_EVENT_ID_END))
+		return IRQ_NONE;
+
+	event = &vm_event_table[irq - MVM_EVENT_ID_BASE];
+	if (!event) {
+		pr_err("event-%d is not register for vm-%d\n", irq, vm->vmid);
+		return IRQ_NONE;
+	}
+
+	send_vm_event(vm->pid, (unsigned long)event->handler);
+
+	return IRQ_HANDLED;
+}
+
+static int register_vm_event(struct vm_device *vm, int pid, int irq, void *arg)
+{
+	int ret;
+	struct vm_event *event;
+	char buf[64];
+
+	pr_info("register event %d 0x%p\n", irq, arg);
+	if ((irq >= MVM_EVENT_ID_END) || (irq < MVM_EVENT_ID_BASE))
+		return -EINVAL;
+
+	event = &vm_event_table[irq - MVM_EVENT_ID_BASE];
+	if (event->handler)
+		pr_warn("event alrady register\n");
+
+	vm->pid = pid;
+	event->handler = arg;
+
+	memset(buf, 0, 64);
+	sprintf(buf, "vm%d-event%d", vm->vmid, irq);
+
+	ret = request_threaded_irq(irq, NULL, vm_event_handler,
+			IRQF_SHARED, buf, vm);
+	if (ret)
+		event->handler = NULL;
+
+	return 0;
+}
+
 static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct vm_device *vm = file_to_vm(filp);
 	uint64_t kernel_arg[2];
+	void *iomem;
 
 	if (!vm)
 		return -ENOENT;
@@ -274,6 +368,23 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		hvc_vm_unmap(vm->vmid);
 		break;
 
+	case IOCTL_REGISTER_MDEV:
+		if (copy_from_user((void *)kernel_arg, (void *)arg,
+				sizeof(uint64_t) * 2))
+			return -EINVAL;
+
+		return register_vm_event(vm, kernel_arg[0] >> 32,
+				kernel_arg[0] & 0xffffffff,
+				(void *)kernel_arg[1]);
+	case IOCTL_SEND_VIRQ:
+		hvc_send_virq(vm->vmid, (uint32_t)arg);
+		break;
+
+	case IOCTL_CREATE_VIRTIO_DEVICE:
+		iomem = hvc_create_virtio_device(vm->vmid);
+		if (copy_to_user((void *)arg, &iomem, sizeof(void *)))
+			return -EIO;
+		return 0;
 	default:
 		break;
 	}
@@ -460,10 +571,28 @@ static long vm0_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	return -EINVAL;
 }
 
+static int vm0_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	size_t size = vma->vm_end - vma->vm_start;
+	unsigned long phy = vma->vm_pgoff << PAGE_SHIFT;
+
+	vma->vm_pgoff = 0;
+	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
+
+	if (vm_iomap_memory(vma, phy, size)) {
+		pr_err("map 0x%lx -> 0x%lx size:0x%lx failed\n",
+			vma->vm_start, phy, size);
+		return -EAGAIN;
+	}
+
+	return 0;
+}
+
 static struct file_operations vm0_fops = {
 	.open		= vm0_open,
 	.release	= vm0_release,
 	.unlocked_ioctl = vm0_ioctl,
+	.mmap		= vm0_mmap,
 	.owner		= THIS_MODULE,
 };
 
@@ -503,9 +632,17 @@ static char *vm_devnode(struct device *dev, umode_t *mode)
 	return kasprintf(GFP_KERNEL, "mvm/%s", dev_name(dev));
 }
 
+static void mvm_netlink_input(struct sk_buff *skb)
+{
+
+}
+
 static int __init minos_init(void)
 {
 	int err;
+	struct netlink_kernel_cfg cfg = {
+		.input = mvm_netlink_input,
+	};
 
 	vm_class = class_create(THIS_MODULE, "mvm");
 	err = PTR_ERR(vm_class);
@@ -516,20 +653,39 @@ static int __init minos_init(void)
 	if (err) {
 		printk("unable to get major %d for mvm devices\n",
 				MINOS_VM_MAJOR);
-		class_destroy(vm_class);
-		return err;
+		goto destroy_class;
 	}
 
 	vm_class->devnode = vm_devnode;
 
 	err = create_vm_device(0, NULL);
-	if (err) {
-		class_destroy(vm_class);
-		unregister_chrdev(MINOS_VM_MAJOR, "mvm");
-		return err;
+	if (err)
+		goto unregister_chardev;
+
+	vm_event_table = (struct vm_event *)
+		__get_free_pages(GFP_KERNEL, EVENT_PAGE_NR);
+	if (!vm_event_table)
+		goto destroy_class;
+
+	memset(vm_event_table, 0, EVENT_PAGE_NR * PAGE_SIZE);
+	mvm_sock = netlink_kernel_create(&init_net, NETLINK_MVM, &cfg);
+	if (!mvm_sock) {
+		pr_err("create mvm netlink failed\n");
+		goto free_table;
 	}
 
 	return 0;
+
+free_table:
+	kfree(vm_event_table);
+
+unregister_chardev:
+	unregister_chrdev(MINOS_VM_MAJOR, "mvm");
+
+destroy_class:
+	class_destroy(vm_class);
+
+	return -1;
 }
 
 static void minos_exit(void)
@@ -537,6 +693,11 @@ static void minos_exit(void)
 	/* remove all vm which has created */
 	class_destroy(vm_class);
 	unregister_chrdev(MINOS_VM_MAJOR, "mvm");
+
+	if (vm_event_table)
+		kfree(vm_event_table);
+
+	netlink_kernel_release(mvm_sock);
 }
 
 module_init(minos_init);

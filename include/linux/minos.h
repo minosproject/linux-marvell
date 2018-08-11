@@ -7,11 +7,12 @@
 #include <linux/list.h>
 #include <linux/fs.h>
 
+#define MINOS_VM_MAX			(64)
+
 #define HVC_TYPE_HVC_VCPU		(0x7)
 #define HVC_TYPE_HVC_VM			(0x8)
 #define HVC_TYPE_HVC_PM			(0x9)
 #define HVC_TYPE_HVC_MISC		(0xa)
-#define HVC_TYPE_HVC_VM0		(0xa)
 
 #define HVC_CALL_BASE			(0xc0000000)
 
@@ -19,7 +20,6 @@
 #define HVC_VM_FN(n)			(HVC_CALL_BASE + (HVC_TYPE_HVC_VM << 24) + n)
 #define HVC_PM_FN(n) 			(HVC_CALL_BASE + (HVC_TYPE_HVC_PM << 24) + n)
 #define HVC_MISC_FN(n)			(HVC_CALL_BASE + (HVC_TYPE_HVC_MISC << 24) + n)
-#define HVC_VM0_FN(n)			(HVC_CALL_BASE + (HVC_TYPE_HVC_VM0 << 24) + n)
 
 #define	HVC_VM_CREATE			HVC_VM_FN(0)
 #define HVC_VM_DESTROY			HVC_VM_FN(1)
@@ -30,6 +30,8 @@
 #define HVC_VM_UNMAP			HVC_VM_FN(6)
 #define HVC_VM_SEND_VIRQ		HVC_VM_FN(7)
 
+#define HVC_MISC_CREATE_VIRTIO_DEVICE	HVC_MISC_FN(0)
+
 #define IOCTL_CREATE_VM			(0xf000)
 #define IOCTL_DESTROY_VM		(0xf001)
 #define IOCTL_RESTART_VM		(0xf002)
@@ -37,8 +39,9 @@
 #define IOCTL_POWER_UP_VM		(0xf004)
 #define IOCTL_VM_MMAP			(0xf005)
 #define IOCTL_VM_UNMAP			(0xf006)
-
-#define MINOS_VM_MAX			(64)
+#define IOCTL_REGISTER_MDEV		(0xf007)
+#define IOCTL_SEND_VIRQ			(0xf008)
+#define IOCTL_CREATE_VIRTIO_DEVICE	(0xf009)
 
 struct vm_info {
 	int8_t name[32];
@@ -54,6 +57,7 @@ struct vm_info {
 
 struct vm_device {
 	int vmid;
+	int pid;
 	atomic_t opened;
 	phys_addr_t pmem_map;
 	unsigned long map_size;
@@ -64,6 +68,10 @@ struct vm_device {
 	struct device device;
 	struct file_operations *fops;
 };
+
+#define MVM_EVENT_ID_BASE	(32)
+#define MVM_MAX_EVENT		(512)
+#define MVM_EVENT_ID_END	(MVM_EVENT_ID_BASE + MVM_MAX_EVENT)
 
 extern unsigned long __minos_hvc(uint32_t id, unsigned long a0,
 		unsigned long a1, unsigned long a2, unsigned long a3,
@@ -113,6 +121,16 @@ static inline int hvc_vm_mmap(int vmid, uint64_t offset, uint64_t size)
 static inline void hvc_vm_unmap(int vmid)
 {
 	minos_hvc1(HVC_VM_UNMAP, vmid);
+}
+
+static inline void hvc_send_virq(int vmid, uint32_t virq)
+{
+	minos_hvc2(HVC_VM_SEND_VIRQ, vmid, virq);
+}
+
+static inline void *hvc_create_virtio_device(int vmid)
+{
+	return (void *)minos_hvc1(HVC_MISC_CREATE_VIRTIO_DEVICE, vmid);
 }
 
 #endif
