@@ -30,8 +30,6 @@
 #include <linux/gfp.h>
 #include <linux/slab.h>
 #include <asm/io.h>
-#include <linux/minos.h>
-
 #include <asm/io.h>
 #include <asm/pgalloc.h>
 #include <asm/uaccess.h>
@@ -40,13 +38,18 @@
 #include <asm/pgtable.h>
 #include <linux/mman.h>
 #include <asm/pgtable-types.h>
-
+#include <linux/platform_device.h>
 #include <net/sock.h>
 #include <linux/netlink.h>
 #include <linux/skbuff.h>
 
+#include <linux/minos.h>
+
+static struct platform_device *mpdev;
+
 struct vm_event {
 	void *handler;
+	struct vm_device *vm;
 } __attribute__((__packed__));
 
 #define	MINOS_VM_MAJOR		(278)
@@ -270,7 +273,7 @@ static void send_vm_event(int pid, unsigned long arg)
 	pr_debug("send 0x%lx to pid-%d\n", arg, pid);
 
 	msg_skb = nlmsg_new(sizeof(void *), GFP_KERNEL);
-	if (msg_skb)
+	if (!msg_skb)
 		return;
 
 	nlh = nlmsg_put(msg_skb, GFP_KERNEL, 0, 0, sizeof(void *), 0);
@@ -291,19 +294,24 @@ static void send_vm_event(int pid, unsigned long arg)
 static irqreturn_t vm_event_handler(int irq, void *data)
 {
 	struct vm_event *event;
-	struct vm_device *vm = (struct vm_device *)data;
+	int hwirq = (int)((unsigned long)data);
+	struct vm_device *vm;
 
-	if (!vm)
+	if (!hwirq)
 		return IRQ_NONE;
 
-	if ((irq < MVM_EVENT_ID_BASE) || (irq >= MVM_EVENT_ID_END))
+	if ((hwirq < MVM_EVENT_ID_BASE) || (hwirq >= MVM_EVENT_ID_END))
 		return IRQ_NONE;
 
-	event = &vm_event_table[irq - MVM_EVENT_ID_BASE];
+	event = &vm_event_table[hwirq - MVM_EVENT_ID_BASE];
 	if (!event) {
-		pr_err("event-%d is not register for vm-%d\n", irq, vm->vmid);
+		pr_err("event-%d is not register\n", irq);
 		return IRQ_NONE;
 	}
+
+	vm = event->vm;
+	if (!vm)
+		return IRQ_NONE;
 
 	send_vm_event(vm->pid, (unsigned long)event->handler);
 
@@ -314,7 +322,7 @@ static int register_vm_event(struct vm_device *vm, int pid, int irq, void *arg)
 {
 	int ret;
 	struct vm_event *event;
-	char buf[64];
+	int virq;
 
 	pr_info("register event %d 0x%p\n", irq, arg);
 	if ((irq >= MVM_EVENT_ID_END) || (irq < MVM_EVENT_ID_BASE))
@@ -326,14 +334,21 @@ static int register_vm_event(struct vm_device *vm, int pid, int irq, void *arg)
 
 	vm->pid = pid;
 	event->handler = arg;
+	event->vm = vm;
 
-	memset(buf, 0, 64);
-	sprintf(buf, "vm%d-event%d", vm->vmid, irq);
+	virq = platform_get_irq(mpdev, irq - 32);
+	if (!irq) {
+		pr_err("can not get the irq of device\n");
+		return -ENOENT;
+	}
 
-	ret = request_threaded_irq(irq, NULL, vm_event_handler,
-			IRQF_SHARED, buf, vm);
-	if (ret)
+	ret = request_threaded_irq(virq, NULL, vm_event_handler, IRQF_ONESHOT,
+			"mvm_vdev", (void *)((unsigned long)irq));
+	if (ret) {
+		pr_err("request event irq failed %d %d\n", irq, ret);
 		event->handler = NULL;
+		return ret;
+	}
 
 	return 0;
 }
@@ -637,12 +652,14 @@ static void mvm_netlink_input(struct sk_buff *skb)
 
 }
 
-static int __init minos_init(void)
+static int minos_hv_probe(struct platform_device *pdev)
 {
 	int err;
 	struct netlink_kernel_cfg cfg = {
 		.input = mvm_netlink_input,
 	};
+
+	mpdev = pdev;
 
 	vm_class = class_create(THIS_MODULE, "mvm");
 	err = PTR_ERR(vm_class);
@@ -688,7 +705,7 @@ destroy_class:
 	return -1;
 }
 
-static void minos_exit(void)
+static int minos_hv_remove(struct platform_device *pdev)
 {
 	/* remove all vm which has created */
 	class_destroy(vm_class);
@@ -698,6 +715,33 @@ static void minos_exit(void)
 		kfree(vm_event_table);
 
 	netlink_kernel_release(mvm_sock);
+
+	return 0;
+}
+
+static struct of_device_id minos_hv_match[] = {
+	{.compatible = "minos,hypervisor", },
+	{},
+}
+MODULE_DEVICE_TABLE(of, minos_hv_match);
+
+static struct platform_driver minos_hv_driver = {
+	.probe	= minos_hv_probe,
+	.remove = minos_hv_remove,
+	.driver = {
+		.name = "minos-hypervisor",
+		.of_match_table = minos_hv_match,
+	},
+};
+
+static int minos_init(void)
+{
+	return platform_driver_register(&minos_hv_driver);
+}
+
+static void minos_exit(void)
+{
+	platform_driver_unregister(&minos_hv_driver);
 }
 
 module_init(minos_init);
