@@ -42,13 +42,14 @@
 #include <net/sock.h>
 #include <linux/netlink.h>
 #include <linux/skbuff.h>
+#include <linux/eventfd.h>
 
 #include <linux/minos.h>
 
 static struct platform_device *mpdev;
 
 struct vm_event {
-	void *handler;
+	struct eventfd_ctx *ctx;
 	struct vm_device *vm;
 } __attribute__((__packed__));
 
@@ -58,8 +59,6 @@ struct vm_event {
 #define EVENT_PAGE_NR	((sizeof(struct vm_event) * MVM_MAX_EVENT) >> PAGE_SHIFT)
 
 struct vm_event *vm_event_table;
-
-static struct sock *mvm_sock;
 
 static int create_vm_device(int vmid, struct vm_info *vm_info);
 
@@ -263,39 +262,10 @@ static int vm_open(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static void send_vm_event(int pid, unsigned long arg)
-{
-	struct nlmsghdr *nlh;
-	struct sk_buff *msg_skb;
-	void *data;
-	int ret;
-
-	pr_debug("send 0x%lx to pid-%d\n", arg, pid);
-
-	msg_skb = nlmsg_new(sizeof(void *), GFP_KERNEL);
-	if (!msg_skb)
-		return;
-
-	nlh = nlmsg_put(msg_skb, GFP_KERNEL, 0, 0, sizeof(void *), 0);
-	if (!nlh)
-		return;
-
-	data = nlmsg_data(nlh);
-	memcpy(data, (void *)&arg, sizeof(unsigned long));
-
-	/*
-	 * TBD - should get a spin lock here ?
-	 */
-	ret = nlmsg_unicast(mvm_sock, msg_skb, pid);
-	if (ret)
-		pr_err("send 0x%lx to pid-%d failed\n", arg, pid);
-}
-
 static irqreturn_t vm_event_handler(int irq, void *data)
 {
 	struct vm_event *event;
 	int hwirq = (int)((unsigned long)data);
-	struct vm_device *vm;
 
 	if (!hwirq)
 		return IRQ_NONE;
@@ -309,31 +279,43 @@ static irqreturn_t vm_event_handler(int irq, void *data)
 		return IRQ_NONE;
 	}
 
-	vm = event->vm;
-	if (!vm)
+	if (!event->vm || !event->ctx)
 		return IRQ_NONE;
 
-	send_vm_event(vm->pid, (unsigned long)event->handler);
+	eventfd_signal(event->ctx, 1);
 
 	return IRQ_HANDLED;
 }
 
-static int register_vm_event(struct vm_device *vm, int pid, int irq, void *arg)
+static int register_vm_event(struct vm_device *vm, int eventfd, int irq)
 {
 	int ret;
-	struct vm_event *event;
 	int virq;
+	struct eventfd_ctx *ctx;
+	struct vm_event *event;
+	struct file *eventfp;
 
-	pr_info("register event %d 0x%p\n", irq, arg);
+	pr_info("register event-%d irq-0x%d\n", eventfd, irq);
 	if ((irq >= MVM_EVENT_ID_END) || (irq < MVM_EVENT_ID_BASE))
 		return -EINVAL;
 
 	event = &vm_event_table[irq - MVM_EVENT_ID_BASE];
-	if (event->handler)
+	if (event->ctx)
 		pr_warn("event alrady register\n");
 
-	vm->pid = pid;
-	event->handler = arg;
+	eventfp = eventfd_fget(eventfd);
+	if (!eventfp) {
+		pr_err("can not the file of the eventfd\n");
+		return -ENOENT;
+	}
+
+	ctx = eventfd_ctx_fileget(eventfp);
+	if (!ctx) {
+		pr_err("can not get the eventfd ctx\n");
+		return -ENOENT;
+	}
+
+	event->ctx = ctx;
 	event->vm = vm;
 
 	virq = platform_get_irq(mpdev, irq - 32);
@@ -346,7 +328,7 @@ static int register_vm_event(struct vm_device *vm, int pid, int irq, void *arg)
 			"mvm_vdev", (void *)((unsigned long)irq));
 	if (ret) {
 		pr_err("request event irq failed %d %d\n", irq, ret);
-		event->handler = NULL;
+		event->ctx = NULL;
 		return ret;
 	}
 
@@ -358,6 +340,7 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	struct vm_device *vm = file_to_vm(filp);
 	uint64_t kernel_arg[2];
 	void *iomem;
+	int ret;
 
 	if (!vm)
 		return -ENOENT;
@@ -383,17 +366,30 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		hvc_vm_unmap(vm->vmid);
 		break;
 
-	case IOCTL_REGISTER_MDEV:
+	case IOCTL_REGISTER_VCPU:
 		if (copy_from_user((void *)kernel_arg, (void *)arg,
-				sizeof(uint64_t) * 2))
+				sizeof(uint64_t) * 1))
 			return -EINVAL;
 
 		return register_vm_event(vm, kernel_arg[0] >> 32,
-				kernel_arg[0] & 0xffffffff,
-				(void *)kernel_arg[1]);
+				kernel_arg[0] & 0xffffffff);
 	case IOCTL_SEND_VIRQ:
 		hvc_send_virq(vm->vmid, (uint32_t)arg);
 		break;
+
+	case IOCTL_CREATE_VMCS:
+		iomem = hvc_create_vmcs(vm->vmid);
+		if (!iomem)
+			return -ENOMEM;
+
+		if (copy_to_user((void *)arg, &iomem, sizeof(void *)))
+			return -EAGAIN;
+
+		return 0;
+
+	case IOCTL_CREATE_VMCS_IRQ:
+		ret = hvc_create_vmcs_irq(vm->vmid, (int)arg);
+		return ret;
 
 	case IOCTL_CREATE_VIRTIO_DEVICE:
 		iomem = hvc_create_virtio_device(vm->vmid);
@@ -647,20 +643,11 @@ static char *vm_devnode(struct device *dev, umode_t *mode)
 	return kasprintf(GFP_KERNEL, "mvm/%s", dev_name(dev));
 }
 
-static void mvm_netlink_input(struct sk_buff *skb)
-{
-
-}
-
 static int minos_hv_probe(struct platform_device *pdev)
 {
 	int err;
-	struct netlink_kernel_cfg cfg = {
-		.input = mvm_netlink_input,
-	};
 
 	mpdev = pdev;
-
 	vm_class = class_create(THIS_MODULE, "mvm");
 	err = PTR_ERR(vm_class);
 	if (IS_ERR(vm_class))
@@ -685,16 +672,7 @@ static int minos_hv_probe(struct platform_device *pdev)
 		goto destroy_class;
 
 	memset(vm_event_table, 0, EVENT_PAGE_NR * PAGE_SIZE);
-	mvm_sock = netlink_kernel_create(&init_net, NETLINK_MVM, &cfg);
-	if (!mvm_sock) {
-		pr_err("create mvm netlink failed\n");
-		goto free_table;
-	}
-
 	return 0;
-
-free_table:
-	kfree(vm_event_table);
 
 unregister_chardev:
 	unregister_chrdev(MINOS_VM_MAJOR, "mvm");
@@ -713,8 +691,6 @@ static int minos_hv_remove(struct platform_device *pdev)
 
 	if (vm_event_table)
 		kfree(vm_event_table);
-
-	netlink_kernel_release(mvm_sock);
 
 	return 0;
 }

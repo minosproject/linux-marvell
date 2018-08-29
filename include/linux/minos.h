@@ -29,6 +29,8 @@
 #define HVC_VM_MMAP			HVC_VM_FN(5)
 #define HVC_VM_UNMAP			HVC_VM_FN(6)
 #define HVC_VM_SEND_VIRQ		HVC_VM_FN(7)
+#define HVC_VM_CREATE_VMCS		HVC_VM_FN(8)
+#define HVC_VM_CREATE_VMCS_IRQ		HVC_VM_FN(9)
 
 #define HVC_MISC_CREATE_VIRTIO_DEVICE	HVC_MISC_FN(0)
 
@@ -39,9 +41,11 @@
 #define IOCTL_POWER_UP_VM		(0xf004)
 #define IOCTL_VM_MMAP			(0xf005)
 #define IOCTL_VM_UNMAP			(0xf006)
-#define IOCTL_REGISTER_MDEV		(0xf007)
+#define IOCTL_REGISTER_VCPU		(0xf007)
 #define IOCTL_SEND_VIRQ			(0xf008)
 #define IOCTL_CREATE_VIRTIO_DEVICE	(0xf009)
+#define IOCTL_CREATE_VMCS		(0xf00a)
+#define IOCTL_CREATE_VMCS_IRQ		(0xf00b)
 
 struct vm_info {
 	int8_t name[32];
@@ -57,7 +61,6 @@ struct vm_info {
 
 struct vm_device {
 	int vmid;
-	int pid;
 	atomic_t opened;
 	phys_addr_t pmem_map;
 	unsigned long map_size;
@@ -131,6 +134,16 @@ static inline void hvc_send_virq(int vmid, uint32_t virq)
 static inline void *hvc_create_virtio_device(int vmid)
 {
 	return (void *)minos_hvc1(HVC_MISC_CREATE_VIRTIO_DEVICE, vmid);
+}
+
+static inline void *hvc_create_vmcs(int vmid)
+{
+	return (void *)minos_hvc1(HVC_VM_CREATE_VMCS, vmid);
+}
+
+static inline int hvc_create_vmcs_irq(int vmid, int vcpu_id)
+{
+	return (int)minos_hvc2(HVC_VM_CREATE_VMCS_IRQ, vmid, vcpu_id);
 }
 
 #endif
