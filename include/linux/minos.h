@@ -6,6 +6,7 @@
 #include <linux/cdev.h>
 #include <linux/list.h>
 #include <linux/fs.h>
+#include <linux/arm-smccc.h>
 
 #define MINOS_VM_MAX			(64)
 
@@ -46,6 +47,7 @@
 #define IOCTL_CREATE_VIRTIO_DEVICE	(0xf009)
 #define IOCTL_CREATE_VMCS		(0xf00a)
 #define IOCTL_CREATE_VMCS_IRQ		(0xf00b)
+#define IOCTL_UNREGISTER_VCPU		(0xf00c)
 
 struct vm_info {
 	int8_t name[32];
@@ -76,9 +78,15 @@ struct vm_device {
 #define MVM_MAX_EVENT		(512)
 #define MVM_EVENT_ID_END	(MVM_EVENT_ID_BASE + MVM_MAX_EVENT)
 
-extern unsigned long __minos_hvc(uint32_t id, unsigned long a0,
-		unsigned long a1, unsigned long a2, unsigned long a3,
-		unsigned long a4, unsigned long a5);
+static inline unsigned long __minos_hvc(uint32_t id, unsigned long a0,
+       unsigned long a1, unsigned long a2, unsigned long a3,
+       unsigned long a4, unsigned long a5)
+{
+   struct arm_smccc_res res;
+
+   arm_smccc_hvc(id, a0, a1, a2, a3, a4, a5, 0, &res);
+   return res.a0;
+}
 
 extern void minos_hvc_result1(void *x1);
 extern void minos_hvc_result2(void *x1, void *x2);

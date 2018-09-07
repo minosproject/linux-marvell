@@ -287,6 +287,32 @@ static irqreturn_t vm_event_handler(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+static int unregister_vm_event(struct vm_device *vm, int irq)
+{
+	int virq;
+	struct vm_event *event;
+
+	pr_info("unregister irq-0x%d\n", irq);
+	if ((irq >= MVM_EVENT_ID_END) || (irq < MVM_EVENT_ID_BASE))
+		return -EINVAL;
+
+	event = &vm_event_table[irq - MVM_EVENT_ID_BASE];
+	if (!event->ctx) {
+		pr_warn("event %d not register\n", irq);
+		return -ENODEV;
+	}
+
+	virq = platform_get_irq(mpdev, irq - MVM_EVENT_ID_BASE);
+	if (!irq) {
+		pr_err("can not get the irq of device\n");
+		return -ENOENT;
+	}
+
+	free_irq(virq, (void *)((unsigned long)irq));
+
+	return 0;
+}
+
 static int register_vm_event(struct vm_device *vm, int eventfd, int irq)
 {
 	int ret;
@@ -294,6 +320,7 @@ static int register_vm_event(struct vm_device *vm, int eventfd, int irq)
 	struct eventfd_ctx *ctx;
 	struct vm_event *event;
 	struct file *eventfp;
+	char *name;
 
 	pr_info("register event-%d irq-0x%d\n", eventfd, irq);
 	if ((irq >= MVM_EVENT_ID_END) || (irq < MVM_EVENT_ID_BASE))
@@ -318,14 +345,23 @@ static int register_vm_event(struct vm_device *vm, int eventfd, int irq)
 	event->ctx = ctx;
 	event->vm = vm;
 
-	virq = platform_get_irq(mpdev, irq - 32);
+	virq = platform_get_irq(mpdev, irq - MVM_EVENT_ID_BASE);
 	if (!irq) {
 		pr_err("can not get the irq of device\n");
 		return -ENOENT;
 	}
 
+	name = kmalloc(32, GFP_KERNEL);
+	if (!name) {
+		event->ctx = NULL;
+		return -ENOMEM;
+	}
+
+	memset(name, 0, 32);
+	sprintf(name, "vm%d-irq%d", vm->vmid, irq);
+
 	ret = request_threaded_irq(virq, NULL, vm_event_handler, IRQF_ONESHOT,
-			"mvm_vdev", (void *)((unsigned long)irq));
+			name, (void *)((unsigned long)irq));
 	if (ret) {
 		pr_err("request event irq failed %d %d\n", irq, ret);
 		event->ctx = NULL;
@@ -365,6 +401,9 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case IOCTL_VM_UNMAP:
 		hvc_vm_unmap(vm->vmid);
 		break;
+
+	case IOCTL_UNREGISTER_VCPU:
+		return unregister_vm_event(vm, (int)arg);
 
 	case IOCTL_REGISTER_VCPU:
 		if (copy_from_user((void *)kernel_arg, (void *)arg,
@@ -482,7 +521,7 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 
 	vma_size = vma_size >> PMD_SHIFT;
 	mmap_base = info->mmap_base;
-	vma->vm_flags |= VM_IO | VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
+	vma->vm_flags |= VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
 	vma->vm_flags &= ~(VM_MAYWRITE);
 	addr = vma->vm_start;
 
