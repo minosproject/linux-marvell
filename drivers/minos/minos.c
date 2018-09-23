@@ -309,6 +309,8 @@ static int unregister_vm_event(struct vm_device *vm, int irq)
 	}
 
 	free_irq(virq, (void *)((unsigned long)irq));
+	event->ctx = NULL;
+	event->vm = NULL;
 
 	return 0;
 }
@@ -383,8 +385,10 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	switch (cmd) {
 	case IOCTL_RESTART_VM:
+		return hvc_vm_reset(vm->vmid);
 		break;
 	case IOCTL_POWER_DOWN_VM:
+		return hvc_vm_power_down(vm->vmid);
 		break;
 
 	case IOCTL_POWER_UP_VM:

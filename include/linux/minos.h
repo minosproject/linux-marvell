@@ -114,6 +114,11 @@ static inline int hvc_vm_destroy(int vmid)
 	return minos_hvc1(HVC_VM_DESTROY, vmid);
 }
 
+static inline int hvc_vm_reset(int vmid)
+{
+	return minos_hvc1(HVC_VM_RESTART, vmid);
+}
+
 static inline int hvc_vm_power_up(int vmid)
 {
 	return minos_hvc1(HVC_VM_POWER_UP, vmid);
