@@ -155,9 +155,15 @@ static __always_inline irqreturn_t timer_handler(const int access,
 
 static irqreturn_t arch_timer_handler_virt(int irq, void *dev_id)
 {
+	unsigned long ctrl;
 	struct clock_event_device *evt = dev_id;
 
-	return timer_handler(ARCH_TIMER_VIRT_ACCESS, evt);
+	ctrl = arch_timer_reg_read(ARCH_TIMER_VIRT_ACCESS, ARCH_TIMER_REG_CTRL, evt);
+	ctrl |= ARCH_TIMER_CTRL_IT_MASK;
+	arch_timer_reg_write(ARCH_TIMER_VIRT_ACCESS, ARCH_TIMER_REG_CTRL, ctrl, evt);
+	evt->event_handler(evt);
+
+	return IRQ_HANDLED;
 }
 
 static irqreturn_t arch_timer_handler_phys(int irq, void *dev_id)
