@@ -1245,6 +1245,7 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 				}
 #endif
 				split_huge_page_pmd(vma, addr, pmd);
+#ifdef CONFIG_MINOS_HYPERVISOR_DRIVER
 			} else if (vma->vm_flags & VM_PFNMAP) {
 				/*
 				 * if the VM_PFNMAP is set, indicate that the
@@ -1253,6 +1254,7 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 				 */
 				pmdp_huge_get_and_clear(tlb->mm, addr, pmd);
 				goto next;
+#endif
 			} else if (zap_huge_pmd(tlb, vma, pmd, addr))
 				goto next;
 			/* fall through */
