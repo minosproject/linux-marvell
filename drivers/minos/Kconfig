@@ -2,16 +2,21 @@ menu "Minos"
 
 config MINOS
 	bool "Enable Minos Hypervisor driver"
+	default y
 	---help---
 	  Enable support for Minos hyperviosr
 
 if MINOS
 
-config HYPERVISOR_MINOS_DRIVER
+config MINOS_HYPERVISOR_DRIVER
 	bool "Minos driver to commuicate the hypervisor"
 	depends on ARM64
-	default n
+	default y
 
 endif
+
+config VIRTIO_CONSOLE_EARLY_PRINTK
+	bool "early printk based on virtio console device"
+	default y
 
 endmenu
