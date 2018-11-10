@@ -34,6 +34,8 @@
 #define HVC_VM_CREATE_VMCS_IRQ		HVC_VM_FN(9)
 
 #define HVC_MISC_CREATE_VIRTIO_DEVICE	HVC_MISC_FN(0)
+#define HVC_MISC_VIRTIO_MMIO_INIT	HVC_MISC_FN(1)
+#define HVC_MISC_VIRTIO_MMIO_DEINIT	HVC_MISC_FN(2)
 
 #define IOCTL_CREATE_VM			(0xf000)
 #define IOCTL_DESTROY_VM		(0xf001)
@@ -48,6 +50,9 @@
 #define IOCTL_CREATE_VMCS		(0xf00a)
 #define IOCTL_CREATE_VMCS_IRQ		(0xf00b)
 #define IOCTL_UNREGISTER_VCPU		(0xf00c)
+#define IOCTL_VIRTIO_MMIO_INIT		(0xf00d)
+#define IOCTL_VIRTIO_MMIO_DEINIT	(0xf00e)
+#define IOCTL_CREATE_GUEST_DEVICE	(0xf00f)
 
 struct vm_info {
 	int8_t name[32];
@@ -129,7 +134,7 @@ static inline int hvc_vm_power_down(int vmid)
 	return minos_hvc1(HVC_VM_POWER_DOWN, vmid);
 }
 
-static inline int hvc_vm_mmap(int vmid, uint64_t offset, uint64_t size)
+static inline int hvc_vm_mmap(int vmid, unsigned long offset, unsigned long size)
 {
 	return minos_hvc3(HVC_VM_MMAP, vmid, offset, size);
 }
@@ -144,9 +149,9 @@ static inline void hvc_send_virq(int vmid, uint32_t virq)
 	minos_hvc2(HVC_VM_SEND_VIRQ, vmid, virq);
 }
 
-static inline void *hvc_create_virtio_device(int vmid)
+static inline int hvc_create_virtio_device(int vmid, unsigned long addr)
 {
-	return (void *)minos_hvc1(HVC_MISC_CREATE_VIRTIO_DEVICE, vmid);
+	return (int)minos_hvc2(HVC_MISC_CREATE_VIRTIO_DEVICE, vmid, addr);
 }
 
 static inline void *hvc_create_vmcs(int vmid)
@@ -157,6 +162,24 @@ static inline void *hvc_create_vmcs(int vmid)
 static inline int hvc_create_vmcs_irq(int vmid, int vcpu_id)
 {
 	return (int)minos_hvc2(HVC_VM_CREATE_VMCS_IRQ, vmid, vcpu_id);
+}
+
+static inline int hvc_virtio_mmio_deinit(int vmid)
+{
+	return (int)minos_hvc1(HVC_MISC_VIRTIO_MMIO_DEINIT, vmid);
+}
+
+static inline int hvc_virtio_mmio_init(int vmid, size_t size,
+		unsigned long *gbase, unsigned long *hbase)
+{
+	struct arm_smccc_res res;
+
+	arm_smccc_hvc(HVC_MISC_VIRTIO_MMIO_INIT,
+			vmid, size, 0, 0, 0, 0, 0, &res);
+	*gbase = res.a1;
+	*hbase = res.a2;
+
+	return (int)res.a0;
 }
 
 #endif

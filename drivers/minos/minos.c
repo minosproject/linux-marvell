@@ -376,7 +376,7 @@ static int register_vm_event(struct vm_device *vm, int eventfd, int irq)
 static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	struct vm_device *vm = file_to_vm(filp);
-	uint64_t kernel_arg[2];
+	unsigned long kernel_arg[4];
 	void *iomem;
 	int ret;
 
@@ -397,7 +397,7 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	case IOCTL_VM_MMAP:
 		if (copy_from_user((void *)kernel_arg, (void *)arg,
-				sizeof(uint64_t) * 2))
+				sizeof(unsigned long) * 2))
 			return -EINVAL;
 		hvc_vm_mmap(vm->vmid, kernel_arg[0], kernel_arg[1]);
 		return 0;
@@ -411,7 +411,7 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	case IOCTL_REGISTER_VCPU:
 		if (copy_from_user((void *)kernel_arg, (void *)arg,
-				sizeof(uint64_t) * 1))
+				sizeof(unsigned long) * 1))
 			return -EINVAL;
 
 		return register_vm_event(vm, kernel_arg[0] >> 32,
@@ -435,10 +435,23 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return ret;
 
 	case IOCTL_CREATE_VIRTIO_DEVICE:
-		iomem = hvc_create_virtio_device(vm->vmid);
-		if (copy_to_user((void *)arg, &iomem, sizeof(void *)))
+		return hvc_create_virtio_device(vm->vmid, arg);
+
+	case IOCTL_VIRTIO_MMIO_INIT:
+		if (copy_from_user((void *)kernel_arg, (void *)arg,
+				sizeof(unsigned long)))
+			return -EINVAL;
+
+		ret = hvc_virtio_mmio_init(vm->vmid, kernel_arg[0],
+				&kernel_arg[1], &kernel_arg[2]);
+		if (ret)
+			return ret;
+		if (copy_to_user((void *)arg, &kernel_arg[1],
+					sizeof(unsigned long) * 2))
 			return -EIO;
 		return 0;
+	case IOCTL_VIRTIO_MMIO_DEINIT:
+		return hvc_virtio_mmio_deinit(vm->vmid);
 	default:
 		break;
 	}
