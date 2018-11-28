@@ -362,7 +362,7 @@ static int register_vm_event(struct vm_device *vm, int eventfd, int irq)
 	memset(name, 0, 32);
 	sprintf(name, "vm%d-irq%d", vm->vmid, irq);
 
-	ret = request_threaded_irq(virq, NULL, vm_event_handler, IRQF_ONESHOT,
+	ret = request_irq(virq, vm_event_handler, 0,
 			name, (void *)((unsigned long)irq));
 	if (ret) {
 		pr_err("request event irq failed %d %d\n", irq, ret);
