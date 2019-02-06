@@ -32,37 +32,43 @@
 #define HVC_VM_SEND_VIRQ		HVC_VM_FN(7)
 #define HVC_VM_CREATE_VMCS		HVC_VM_FN(8)
 #define HVC_VM_CREATE_VMCS_IRQ		HVC_VM_FN(9)
+#define HVC_VM_REQUEST_VIRQ		HVC_VM_FN(10)
 
-#define HVC_MISC_CREATE_VIRTIO_DEVICE	HVC_MISC_FN(0)
 #define HVC_MISC_VIRTIO_MMIO_INIT	HVC_MISC_FN(1)
 #define HVC_MISC_VIRTIO_MMIO_DEINIT	HVC_MISC_FN(2)
+#define HVC_MISC_CREATE_HOST_VDEV	HVC_MISC_FN(3)
 
-#define IOCTL_CREATE_VM			(0xf000)
-#define IOCTL_DESTROY_VM		(0xf001)
-#define IOCTL_RESTART_VM		(0xf002)
-#define IOCTL_POWER_DOWN_VM		(0xf003)
-#define IOCTL_POWER_UP_VM		(0xf004)
-#define IOCTL_VM_MMAP			(0xf005)
-#define IOCTL_VM_UNMAP			(0xf006)
-#define IOCTL_REGISTER_VCPU		(0xf007)
-#define IOCTL_SEND_VIRQ			(0xf008)
-#define IOCTL_CREATE_VIRTIO_DEVICE	(0xf009)
-#define IOCTL_CREATE_VMCS		(0xf00a)
-#define IOCTL_CREATE_VMCS_IRQ		(0xf00b)
-#define IOCTL_UNREGISTER_VCPU		(0xf00c)
-#define IOCTL_VIRTIO_MMIO_INIT		(0xf00d)
-#define IOCTL_VIRTIO_MMIO_DEINIT	(0xf00e)
-#define IOCTL_CREATE_GUEST_DEVICE	(0xf00f)
+#define IOCTL_CREATE_VM			0xf000
+#define IOCTL_DESTROY_VM		0xf001
+#define IOCTL_RESTART_VM		0xf002
+#define IOCTL_POWER_DOWN_VM		0xf003
+#define IOCTL_POWER_UP_VM		0xf004
+#define IOCTL_VM_MMAP			0xf005
+#define IOCTL_VM_UNMAP			0xf006
+#define IOCTL_REGISTER_VCPU		0xf007
+#define IOCTL_SEND_VIRQ			0xf008
+#define IOCTL_CREATE_VMCS		0xf00a
+#define IOCTL_CREATE_VMCS_IRQ		0xf00b
+#define IOCTL_UNREGISTER_VCPU		0xf00c
+#define IOCTL_VIRTIO_MMIO_INIT		0xf00d
+#define IOCTL_VIRTIO_MMIO_DEINIT	0xf00e
+#define IOCTL_REQUEST_VIRQ		0xf00f
+#define IOCTL_CREATE_HOST_VDEV		0xf010
 
-struct vm_info {
-	int8_t name[32];
-	int8_t os_type[32];
-	int32_t nr_vcpus;
-	int32_t bit64;
-	uint64_t mem_size;
-	uint64_t mem_start;
-	uint64_t entry;
-	uint64_t setup_data;
+#define VM_NAME_SIZE	32
+#define VM_TYPE_SIZE	16
+
+struct vmtag {
+	uint32_t vmid;
+	char name[VM_NAME_SIZE];
+	char os_type[VM_TYPE_SIZE];
+	int32_t nr_vcpu;
+	unsigned long mem_base;
+	unsigned long mem_size;
+	void *entry;
+	void *setup_data;
+	unsigned long flags;
+	uint32_t vcpu_affinity[8];
 	uint64_t mmap_base;
 };
 
@@ -73,7 +79,7 @@ struct vm_device {
 	unsigned long map_size;
 	unsigned long guest_page_size;
 	struct list_head list;
-	struct vm_info vm_info;
+	struct vmtag vmtag;
 	struct device *parent;
 	struct device device;
 	struct file_operations *fops;
@@ -109,9 +115,9 @@ extern void minos_hvc_result2(void *x1, void *x2);
 #define minos_hvc5(id, a, b, c, d, e)		minos_hvc(id, a, b, c, d, e, 0)
 #define minos_hvc6(id, a, b, c, d, e, f)	minos_hvc(id, a, b, c, d, e, f)
 
-static inline int hvc_vm_create(struct vm_info *vminfo)
+static inline int hvc_vm_create(struct vmtag *vmtag)
 {
-	return minos_hvc1(HVC_VM_CREATE, vminfo);
+	return minos_hvc1(HVC_VM_CREATE, vmtag);
 }
 
 static inline int hvc_vm_destroy(int vmid)
@@ -149,11 +155,6 @@ static inline void hvc_send_virq(int vmid, uint32_t virq)
 	minos_hvc2(HVC_VM_SEND_VIRQ, vmid, virq);
 }
 
-static inline int hvc_create_virtio_device(int vmid, unsigned long addr)
-{
-	return (int)minos_hvc2(HVC_MISC_CREATE_VIRTIO_DEVICE, vmid, addr);
-}
-
 static inline void *hvc_create_vmcs(int vmid)
 {
 	return (void *)minos_hvc1(HVC_VM_CREATE_VMCS, vmid);
@@ -180,6 +181,16 @@ static inline int hvc_virtio_mmio_init(int vmid, size_t size,
 	*hbase = res.a2;
 
 	return (int)res.a0;
+}
+
+static inline int hvc_create_host_vdev(int vmid)
+{
+	return (int)minos_hvc1(HVC_MISC_CREATE_HOST_VDEV, vmid);
+}
+
+static inline int hvc_request_virq(int vmid, int base, int nr)
+{
+	return (int)minos_hvc3(HVC_VM_REQUEST_VIRQ, vmid, base, nr);
 }
 
 #endif

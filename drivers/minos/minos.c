@@ -60,7 +60,7 @@ struct vm_event {
 
 struct vm_event *vm_event_table;
 
-static int create_vm_device(int vmid, struct vm_info *vm_info);
+static int create_vm_device(int vmid, struct vmtag *vmtag);
 
 struct class *vm_class;
 static LIST_HEAD(vm_list);
@@ -77,16 +77,16 @@ static DEFINE_MUTEX(vm_mutex);
 			struct device_attribute * attr, char *buf) \
 	{ \
 		struct vm_device *vm = dev_to_vm(dev); \
-		struct vm_info *info = &vm->vm_info; \
+		struct vmtag *info = &vm->vmtag; \
 		return sprintf(buf, format, info->_member); \
 	}
 
-VM_INFO_SHOW(mem_start, "0x%llx\n")
-VM_INFO_SHOW(bit64, "%d\n")
-VM_INFO_SHOW(mem_size, "0x%llx\n")
-VM_INFO_SHOW(entry, "0x%llx\n")
-VM_INFO_SHOW(setup_data, "0x%llx\n")
-VM_INFO_SHOW(nr_vcpus, "%d\n")
+VM_INFO_SHOW(mem_base, "0x%lx\n")
+VM_INFO_SHOW(flags, "0x%lx\n")
+VM_INFO_SHOW(mem_size, "0x%lx\n")
+VM_INFO_SHOW(entry, "0x%p\n")
+VM_INFO_SHOW(setup_data, "0x%p\n")
+VM_INFO_SHOW(nr_vcpu, "%d\n")
 VM_INFO_SHOW(name, "%s\n")
 VM_INFO_SHOW(os_type, "%s\n")
 
@@ -100,13 +100,13 @@ vm_vmid_show(struct device *dev, struct device_attribute *attr, char *buf)
 
 static DEVICE_ATTR(vmid, 0444, vm_vmid_show, NULL);
 static DEVICE_ATTR(mem_size, 0444, vm_mem_size_show, NULL);
-static DEVICE_ATTR(nr_vcpus, 0444, vm_nr_vcpus_show, NULL);
-static DEVICE_ATTR(mem_start, 0444, vm_mem_start_show, NULL);
+static DEVICE_ATTR(nr_vcpu, 0444, vm_nr_vcpu_show, NULL);
+static DEVICE_ATTR(mem_base, 0444, vm_mem_base_show, NULL);
 static DEVICE_ATTR(entry, 0444, vm_entry_show, NULL);
 static DEVICE_ATTR(setup_data, 0444, vm_setup_data_show, NULL);
 static DEVICE_ATTR(name, 0444, vm_name_show, NULL);
 static DEVICE_ATTR(os_type, 0444, vm_os_type_show, NULL);
-static DEVICE_ATTR(bit64, 0444, vm_bit64_show, NULL);
+static DEVICE_ATTR(flags, 0444, vm_flags_show, NULL);
 
 static int mvm_open(struct inode *inode, struct file *file)
 {
@@ -178,14 +178,14 @@ static int vm_device_register(struct vm_device *vm)
 	mutex_unlock(&vm_mutex);
 
 	device_create_file(&vm->device, &dev_attr_vmid);
-	device_create_file(&vm->device, &dev_attr_nr_vcpus);
+	device_create_file(&vm->device, &dev_attr_nr_vcpu);
 	device_create_file(&vm->device, &dev_attr_mem_size);
-	device_create_file(&vm->device, &dev_attr_mem_start);
+	device_create_file(&vm->device, &dev_attr_mem_base);
 	device_create_file(&vm->device, &dev_attr_entry);
 	device_create_file(&vm->device, &dev_attr_setup_data);
 	device_create_file(&vm->device, &dev_attr_name);
 	device_create_file(&vm->device, &dev_attr_os_type);
-	device_create_file(&vm->device, &dev_attr_bit64);
+	device_create_file(&vm->device, &dev_attr_flags);
 
 	return 0;
 }
@@ -220,14 +220,14 @@ static int destroy_vm(int vmid)
 	mutex_unlock(&vm_mutex);
 
 	device_remove_file(&vm->device, &dev_attr_vmid);
-	device_remove_file(&vm->device, &dev_attr_nr_vcpus);
+	device_remove_file(&vm->device, &dev_attr_nr_vcpu);
 	device_remove_file(&vm->device, &dev_attr_mem_size);
-	device_remove_file(&vm->device, &dev_attr_mem_start);
+	device_remove_file(&vm->device, &dev_attr_mem_base);
 	device_remove_file(&vm->device, &dev_attr_entry);
 	device_remove_file(&vm->device, &dev_attr_setup_data);
 	device_remove_file(&vm->device, &dev_attr_name);
 	device_remove_file(&vm->device, &dev_attr_os_type);
-	device_remove_file(&vm->device, &dev_attr_bit64);
+	device_remove_file(&vm->device, &dev_attr_flags);
 
 	device_destroy(vm_class, MKDEV(MINOS_VM_MAJOR, vm->vmid));
 	hvc_vm_destroy(vmid);
@@ -433,9 +433,13 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	case IOCTL_CREATE_VMCS_IRQ:
 		ret = hvc_create_vmcs_irq(vm->vmid, (int)arg);
 		return ret;
+	case IOCTL_REQUEST_VIRQ:
+		if (copy_from_user((void *)kernel_arg, (void *)arg,
+				2 * sizeof(unsigned long)))
+			return -EINVAL;
 
-	case IOCTL_CREATE_VIRTIO_DEVICE:
-		return hvc_create_virtio_device(vm->vmid, arg);
+		return hvc_request_virq(vm->vmid, (int)kernel_arg[0],
+				(int)kernel_arg[1]);
 
 	case IOCTL_VIRTIO_MMIO_INIT:
 		if (copy_from_user((void *)kernel_arg, (void *)arg,
@@ -452,6 +456,8 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return 0;
 	case IOCTL_VIRTIO_MMIO_DEINIT:
 		return hvc_virtio_mmio_deinit(vm->vmid);
+	case IOCTL_CREATE_HOST_VDEV:
+		return hvc_create_host_vdev(vm->vmid);
 	default:
 		break;
 	}
@@ -516,7 +522,7 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 	unsigned long offset, mmap_base, addr;
 	struct mm_struct *mm = vma->vm_mm;
 	struct vm_device *vm = file_to_vm(file);
-	struct vm_info *info = &vm->vm_info;
+	struct vmtag *info = &vm->vmtag;
 	unsigned long vma_size = vma->vm_end - vma->vm_start;
 
 	/*
@@ -587,7 +593,7 @@ static int vm0_release(struct inode *inode, struct file *filp)
 	return 0;
 }
 
-static int create_new_vm(struct vm_info *info)
+static int create_new_vm(struct vmtag *info)
 {
 	int vmid;
 
@@ -608,21 +614,21 @@ static int create_new_vm(struct vm_info *info)
 static long vm0_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	int ret, vmid;
-	struct vm_info vm_info;
+	struct vmtag vmtag;
 
 	switch (cmd) {
 	case IOCTL_CREATE_VM:
-		memset(&vm_info, 0, sizeof(struct vm_info));
-		ret = copy_from_user(&vm_info, (void *)arg, sizeof(struct vm_info));
+		memset(&vmtag, 0, sizeof(struct vmtag));
+		ret = copy_from_user(&vmtag, (void *)arg, sizeof(struct vmtag));
 		if (ret)
 			return -EINVAL;
 
-		vmid = create_new_vm(&vm_info);
+		vmid = create_new_vm(&vmtag);
 		if (vmid <= 0)
 			return vmid;
 
-		ret = copy_to_user((void *)arg, (void *)&vm_info,
-				sizeof(struct vm_info));
+		ret = copy_to_user((void *)arg, (void *)&vmtag,
+				sizeof(struct vmtag));
 		if (ret)
 			pr_err("copy vm info to user failed\n");
 
@@ -663,7 +669,7 @@ static struct file_operations vm0_fops = {
 	.owner		= THIS_MODULE,
 };
 
-static int create_vm_device(int vmid, struct vm_info *vm_info)
+static int create_vm_device(int vmid, struct vmtag *vmtag)
 {
 	int ret;
 	struct vm_device *vm;
@@ -675,8 +681,8 @@ static int create_vm_device(int vmid, struct vm_info *vm_info)
 	/* fix the guest_page_size to PMD_SIZE(2M on arm64) now */
 	vm->vmid = vmid;
 	vm->guest_page_size = PMD_SIZE;
-	if (vm_info)
-		memcpy(&vm->vm_info, vm_info, sizeof(struct vm_info));
+	if (vmtag)
+		memcpy(&vm->vmtag, vmtag, sizeof(struct vmtag));
 
 	if (vmid == 0)
 		vm->fops = &vm0_fops;
