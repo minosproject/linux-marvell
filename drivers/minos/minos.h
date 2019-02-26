@@ -8,53 +8,10 @@
 #include <linux/fs.h>
 #include <linux/arm-smccc.h>
 
+#include "minos_hypercall.h"
+#include "minos_ioctl.h"
+
 #define MINOS_VM_MAX			(64)
-
-#define HVC_TYPE_HVC_VCPU		(0x7)
-#define HVC_TYPE_HVC_VM			(0x8)
-#define HVC_TYPE_HVC_PM			(0x9)
-#define HVC_TYPE_HVC_MISC		(0xa)
-
-#define HVC_CALL_BASE			(0xc0000000)
-
-#define HVC_VCPU_FN(n)			(HVC_CALL_BASE + (HVC_TYPE_HVC_VCPU << 24) + n)
-#define HVC_VM_FN(n)			(HVC_CALL_BASE + (HVC_TYPE_HVC_VM << 24) + n)
-#define HVC_PM_FN(n) 			(HVC_CALL_BASE + (HVC_TYPE_HVC_PM << 24) + n)
-#define HVC_MISC_FN(n)			(HVC_CALL_BASE + (HVC_TYPE_HVC_MISC << 24) + n)
-
-#define	HVC_VM_CREATE			HVC_VM_FN(0)
-#define HVC_VM_DESTROY			HVC_VM_FN(1)
-#define HVC_VM_RESTART			HVC_VM_FN(2)
-#define HVC_VM_POWER_UP			HVC_VM_FN(3)
-#define HVC_VM_POWER_DOWN		HVC_VM_FN(4)
-#define HVC_VM_MMAP			HVC_VM_FN(5)
-#define HVC_VM_UNMAP			HVC_VM_FN(6)
-#define HVC_VM_SEND_VIRQ		HVC_VM_FN(7)
-#define HVC_VM_CREATE_VMCS		HVC_VM_FN(8)
-#define HVC_VM_CREATE_VMCS_IRQ		HVC_VM_FN(9)
-#define HVC_VM_REQUEST_VIRQ		HVC_VM_FN(10)
-
-#define HVC_MISC_VIRTIO_MMIO_INIT	HVC_MISC_FN(1)
-#define HVC_MISC_VIRTIO_MMIO_DEINIT	HVC_MISC_FN(2)
-#define HVC_MISC_CREATE_HOST_VDEV	HVC_MISC_FN(3)
-
-#define IOCTL_CREATE_VM			0xf000
-#define IOCTL_DESTROY_VM		0xf001
-#define IOCTL_RESTART_VM		0xf002
-#define IOCTL_POWER_DOWN_VM		0xf003
-#define IOCTL_POWER_UP_VM		0xf004
-#define IOCTL_VM_MMAP			0xf005
-#define IOCTL_VM_UNMAP			0xf006
-#define IOCTL_REGISTER_VCPU		0xf007
-#define IOCTL_SEND_VIRQ			0xf008
-#define IOCTL_CREATE_VMCS		0xf00a
-#define IOCTL_CREATE_VMCS_IRQ		0xf00b
-#define IOCTL_UNREGISTER_VCPU		0xf00c
-#define IOCTL_VIRTIO_MMIO_INIT		0xf00d
-#define IOCTL_VIRTIO_MMIO_DEINIT	0xf00e
-#define IOCTL_REQUEST_VIRQ		0xf00f
-#define IOCTL_CREATE_HOST_VDEV		0xf010
-
 #define VM_NAME_SIZE	32
 #define VM_TYPE_SIZE	16
 
@@ -122,7 +79,7 @@ static inline int hvc_vm_create(struct vmtag *vmtag)
 
 static inline int hvc_vm_destroy(int vmid)
 {
-	return minos_hvc1(HVC_VM_DESTROY, vmid);
+	return minos_hvc1(HVC_VM_DESTORY, vmid);
 }
 
 static inline int hvc_vm_reset(int vmid)
@@ -147,7 +104,7 @@ static inline int hvc_vm_mmap(int vmid, unsigned long offset, unsigned long size
 
 static inline void hvc_vm_unmap(int vmid)
 {
-	minos_hvc1(HVC_VM_UNMAP, vmid);
+	minos_hvc1(HVC_VM_UNMMAP, vmid);
 }
 
 static inline void hvc_send_virq(int vmid, uint32_t virq)
@@ -167,7 +124,7 @@ static inline int hvc_create_vmcs_irq(int vmid, int vcpu_id)
 
 static inline int hvc_virtio_mmio_deinit(int vmid)
 {
-	return (int)minos_hvc1(HVC_MISC_VIRTIO_MMIO_DEINIT, vmid);
+	return (int)minos_hvc1(HVC_VM_VIRTIO_MMIO_DEINIT, vmid);
 }
 
 static inline int hvc_virtio_mmio_init(int vmid, size_t size,
@@ -175,7 +132,7 @@ static inline int hvc_virtio_mmio_init(int vmid, size_t size,
 {
 	struct arm_smccc_res res;
 
-	arm_smccc_hvc(HVC_MISC_VIRTIO_MMIO_INIT,
+	arm_smccc_hvc(HVC_VM_VIRTIO_MMIO_INIT,
 			vmid, size, 0, 0, 0, 0, 0, &res);
 	*gbase = res.a1;
 	*hbase = res.a2;
@@ -185,7 +142,7 @@ static inline int hvc_virtio_mmio_init(int vmid, size_t size,
 
 static inline int hvc_create_host_vdev(int vmid)
 {
-	return (int)minos_hvc1(HVC_MISC_CREATE_HOST_VDEV, vmid);
+	return (int)minos_hvc1(HVC_VM_CREATE_HOST_VDEV, vmid);
 }
 
 static inline int hvc_request_virq(int vmid, int base, int nr)

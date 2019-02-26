@@ -43,8 +43,10 @@
 #include <linux/netlink.h>
 #include <linux/skbuff.h>
 #include <linux/eventfd.h>
+#include <linux/interrupt.h>
+#include <linux/of.h>
 
-#include <linux/minos.h>
+#include "minos.h"
 
 static struct platform_device *mpdev;
 
@@ -292,7 +294,7 @@ static int unregister_vm_event(struct vm_device *vm, int irq)
 	int virq;
 	struct vm_event *event;
 
-	pr_info("unregister irq-0x%d\n", irq);
+	pr_info("unregister irq-%d\n", irq);
 	if ((irq >= MVM_EVENT_ID_END) || (irq < MVM_EVENT_ID_BASE))
 		return -EINVAL;
 
@@ -324,7 +326,7 @@ static int register_vm_event(struct vm_device *vm, int eventfd, int irq)
 	struct file *eventfp;
 	char *name;
 
-	pr_info("register event-%d irq-0x%d\n", eventfd, irq);
+	pr_info("register event-%d irq-%d\n", eventfd, irq);
 	if ((irq >= MVM_EVENT_ID_END) || (irq < MVM_EVENT_ID_BASE))
 		return -EINVAL;
 
@@ -508,7 +510,7 @@ static pte_t *mvm_pmd_alloc(struct mm_struct *mm, unsigned long addr)
 	pgd_t *pgd;
 
 	pgd = pgd_offset(mm, addr);
-	if (*pgd) {
+	if (pgd_val(*pgd)) {
 		return (pte_t *)pmd_offset((pud_t *)pgd, addr);
 	} else
 		return (pte_t *)pmd_alloc(mm, (pud_t *)pgd, addr);
@@ -709,6 +711,8 @@ static int minos_hv_probe(struct platform_device *pdev)
 {
 	int err;
 
+	pr_info("Minos Hyperviosr Driver Init ...\n");
+
 	mpdev = pdev;
 	vm_class = class_create(THIS_MODULE, "mvm");
 	err = PTR_ERR(vm_class);
@@ -734,6 +738,8 @@ static int minos_hv_probe(struct platform_device *pdev)
 		goto destroy_class;
 
 	memset(vm_event_table, 0, EVENT_PAGE_NR * PAGE_SIZE);
+	pr_info("Minos Hyperviosr Driver Init Done\n");
+
 	return 0;
 
 unregister_chardev:
