@@ -100,6 +100,23 @@ vm_vmid_show(struct device *dev, struct device_attribute *attr, char *buf)
 	return sprintf(buf, "%d\n", vm->vmid);
 }
 
+static ssize_t hv_log_level_store(struct device *dev,
+		struct device_attribute *attr, const char *buf, size_t count)
+{
+	unsigned int level;
+
+	sscanf(buf, "%d", &level);
+	hvc_change_log_level(level);
+
+	return count;
+}
+
+static ssize_t
+hv_log_level_show(struct device *dev, struct device_attribute *attr, char *buf)
+{
+	return sprintf(buf, "%d\n", 0);
+}
+
 static DEVICE_ATTR(vmid, 0444, vm_vmid_show, NULL);
 static DEVICE_ATTR(mem_size, 0444, vm_mem_size_show, NULL);
 static DEVICE_ATTR(nr_vcpu, 0444, vm_nr_vcpu_show, NULL);
@@ -109,6 +126,9 @@ static DEVICE_ATTR(setup_data, 0444, vm_setup_data_show, NULL);
 static DEVICE_ATTR(name, 0444, vm_name_show, NULL);
 static DEVICE_ATTR(os_type, 0444, vm_os_type_show, NULL);
 static DEVICE_ATTR(flags, 0444, vm_flags_show, NULL);
+
+static DEVICE_ATTR(log_level, S_IWUSR | S_IRUGO,
+		hv_log_level_show, hv_log_level_store);
 
 static int mvm_open(struct inode *inode, struct file *file)
 {
@@ -189,6 +209,9 @@ static int vm_device_register(struct vm_device *vm)
 	device_create_file(&vm->device, &dev_attr_os_type);
 	device_create_file(&vm->device, &dev_attr_flags);
 
+	if (vm->vmid == 0)
+		device_create_file(&vm->device, &dev_attr_log_level);
+
 	return 0;
 }
 
@@ -230,6 +253,9 @@ static int destroy_vm(int vmid)
 	device_remove_file(&vm->device, &dev_attr_name);
 	device_remove_file(&vm->device, &dev_attr_os_type);
 	device_remove_file(&vm->device, &dev_attr_flags);
+
+	if (vmid == 0)
+		device_remove_file(&vm->device, &dev_attr_log_level);
 
 	device_destroy(vm_class, MKDEV(MINOS_VM_MAJOR, vm->vmid));
 	hvc_vm_destroy(vmid);

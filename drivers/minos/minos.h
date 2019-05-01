@@ -150,4 +150,9 @@ static inline int hvc_request_virq(int vmid, int base, int nr)
 	return (int)minos_hvc3(HVC_VM_REQUEST_VIRQ, vmid, base, nr);
 }
 
+static inline void hvc_change_log_level(unsigned int level)
+{
+	minos_hvc1(HVC_CHANGE_LOG_LEVEL, level);
+}
+
 #endif
