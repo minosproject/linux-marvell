@@ -427,12 +427,19 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		if (copy_from_user((void *)kernel_arg, (void *)arg,
 				sizeof(unsigned long) * 2))
 			return -EINVAL;
-		hvc_vm_mmap(vm->vmid, kernel_arg[0], kernel_arg[1]);
-		return 0;
 
-	case IOCTL_VM_UNMAP:
-		hvc_vm_unmap(vm->vmid);
-		break;
+		ret = hvc_vm_mmap(vm->vmid, kernel_arg[0],
+				kernel_arg[1], &vm->vm0_mmap_base);
+		if (ret) {
+			pr_err("map vm memory to vm0 space failed\n");
+			return -ENOMEM;
+		}
+
+		if (copy_to_user((void *)arg, (void *)&vm->vm0_mmap_base,
+				sizeof(unsigned long)))
+			return -EIO;
+
+		return 0;
 
 	case IOCTL_UNREGISTER_VCPU:
 		return unregister_vm_event(vm, (int)arg);
@@ -471,19 +478,18 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	case IOCTL_VIRTIO_MMIO_INIT:
 		if (copy_from_user((void *)kernel_arg, (void *)arg,
-				sizeof(unsigned long)))
+				sizeof(uint64_t) * 2))
 			return -EINVAL;
 
 		ret = hvc_virtio_mmio_init(vm->vmid, kernel_arg[0],
-				&kernel_arg[1], &kernel_arg[2]);
+				kernel_arg[1], &kernel_arg[2]);
 		if (ret)
 			return ret;
-		if (copy_to_user((void *)arg, &kernel_arg[1],
-					sizeof(unsigned long) * 2))
+
+		if (copy_to_user((void *)arg, &kernel_arg[2], sizeof(uint64_t)))
 			return -EIO;
+
 		return 0;
-	case IOCTL_VIRTIO_MMIO_DEINIT:
-		return hvc_virtio_mmio_deinit(vm->vmid);
 	case IOCTL_CREATE_HOST_VDEV:
 		return hvc_create_host_vdev(vm->vmid);
 	default:
@@ -557,7 +563,7 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 	 * now minos only support 2M block so using pmd
 	 * mapping, the va_start must PUD size align
 	 */
-	if ((!vm) || (!info->mmap_base) || (!info->mem_size))
+	if ((!vm) || (!info->mem_size))
 		return -ENOENT;
 
 	if (vma->vm_start & (vm->guest_page_size - 1))
@@ -566,12 +572,12 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 	if (vma_size & (vm->guest_page_size - 1))
 		return -EINVAL;
 
-	pr_debug("vm-%d map 0x%lx -> 0x%llx size:0x%lx\n",
+	pr_debug("vm-%d map 0x%lx -> 0x%lx size:0x%lx\n",
 			vm->vmid, vma->vm_start,
-			info->mmap_base, vma_size);
+			vm->vm0_mmap_base, vma_size);
 
 	vma_size = vma_size >> PMD_SHIFT;
-	mmap_base = info->mmap_base;
+	mmap_base = vm->vm0_mmap_base;
 	vma->vm_flags |= VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
 	vma->vm_flags &= ~(VM_MAYWRITE);
 	addr = vma->vm_start;

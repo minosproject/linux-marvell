@@ -26,13 +26,13 @@ struct vmtag {
 	void *setup_data;
 	unsigned long flags;
 	uint32_t vcpu_affinity[8];
-	uint64_t mmap_base;
 };
 
 struct vm_device {
 	int vmid;
 	atomic_t opened;
 	phys_addr_t pmem_map;
+	unsigned long vm0_mmap_base;
 	unsigned long map_size;
 	unsigned long guest_page_size;
 	struct list_head list;
@@ -97,9 +97,16 @@ static inline int hvc_vm_power_down(int vmid)
 	return minos_hvc1(HVC_VM_POWER_DOWN, vmid);
 }
 
-static inline int hvc_vm_mmap(int vmid, unsigned long offset, unsigned long size)
+static inline int hvc_vm_mmap(int vmid, unsigned long offset,
+		unsigned long size, unsigned long *addr)
 {
-	return minos_hvc3(HVC_VM_MMAP, vmid, offset, size);
+	struct arm_smccc_res res;
+
+	arm_smccc_hvc(HVC_VM_MMAP, vmid, offset, size, 0, 0, 0, 0, &res);
+
+	*addr = res.a1;
+
+	return (int)res.a0;
 }
 
 static inline void hvc_vm_unmap(int vmid)
@@ -127,15 +134,14 @@ static inline int hvc_virtio_mmio_deinit(int vmid)
 	return (int)minos_hvc1(HVC_VM_VIRTIO_MMIO_DEINIT, vmid);
 }
 
-static inline int hvc_virtio_mmio_init(int vmid, size_t size,
-		unsigned long *gbase, unsigned long *hbase)
+static inline int hvc_virtio_mmio_init(int vmid, unsigned long gbase,
+		size_t size, unsigned long *hbase)
 {
 	struct arm_smccc_res res;
 
 	arm_smccc_hvc(HVC_VM_VIRTIO_MMIO_INIT,
-			vmid, size, 0, 0, 0, 0, 0, &res);
-	*gbase = res.a1;
-	*hbase = res.a2;
+			vmid, gbase, size, 0, 0, 0, 0, &res);
+	*hbase = res.a1;
 
 	return (int)res.a0;
 }
