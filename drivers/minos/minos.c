@@ -37,7 +37,6 @@
 #include <asm/tlbflush.h>
 #include <asm/pgtable.h>
 #include <linux/mman.h>
-#include <asm/pgtable-types.h>
 #include <linux/platform_device.h>
 #include <net/sock.h>
 #include <linux/netlink.h>
@@ -45,6 +44,12 @@
 #include <linux/eventfd.h>
 #include <linux/interrupt.h>
 #include <linux/of.h>
+
+#ifdef CONFIG_ARM64
+#include <asm/pgtable-types.h>
+#else
+#include <asm/mach/map.h>
+#endif
 
 #include "minos.h"
 
@@ -449,8 +454,7 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 				sizeof(unsigned long) * 1))
 			return -EINVAL;
 
-		return register_vm_event(vm, kernel_arg[0] >> 32,
-				kernel_arg[0] & 0xffffffff);
+		return register_vm_event(vm, kernel_arg[0], kernel_arg[1]);
 	case IOCTL_SEND_VIRQ:
 		hvc_send_virq(vm->vmid, (uint32_t)arg);
 		break;
@@ -478,7 +482,7 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	case IOCTL_VIRTIO_MMIO_INIT:
 		if (copy_from_user((void *)kernel_arg, (void *)arg,
-				sizeof(uint64_t) * 2))
+				sizeof(unsigned long) * 2))
 			return -EINVAL;
 
 		ret = hvc_virtio_mmio_init(vm->vmid, kernel_arg[0],
@@ -486,7 +490,7 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		if (ret)
 			return ret;
 
-		if (copy_to_user((void *)arg, &kernel_arg[2], sizeof(uint64_t)))
+		if (copy_to_user((void *)arg, &kernel_arg[2], sizeof(unsigned long)))
 			return -EIO;
 
 		return 0;
@@ -537,6 +541,7 @@ mvm_get_unmapped_area(struct file *file, unsigned long addr,
 	return vm_unmapped_area(&info);
 }
 
+#ifdef CONFIG_ARM64
 static pte_t *mvm_pmd_alloc(struct mm_struct *mm, unsigned long addr)
 {
 	pgd_t *pgd;
@@ -550,8 +555,6 @@ static pte_t *mvm_pmd_alloc(struct mm_struct *mm, unsigned long addr)
 
 static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	pte_t *ptep;
-	int count, i;
 	pmd_t pmd;
 	unsigned long offset, mmap_base, addr;
 	struct mm_struct *mm = vma->vm_mm;
@@ -560,8 +563,8 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 	unsigned long vma_size = vma->vm_end - vma->vm_start;
 
 	/*
-	 * now minos only support 2M block so using pmd
-	 * mapping, the va_start must PUD size align
+	 * now minos only support 1M Section for aarch32 so using
+	 * pmd mapping, the va_start must PUD size align
 	 */
 	if ((!vm) || (!info->mem_size))
 		return -ENOENT;
@@ -572,7 +575,7 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 	if (vma_size & (vm->guest_page_size - 1))
 		return -EINVAL;
 
-	pr_debug("vm-%d map 0x%lx -> 0x%lx size:0x%lx\n",
+	pr_info("vm-%d map 0x%lx -> 0x%lx size:0x%lx\n",
 			vm->vmid, vma->vm_start,
 			vm->vm0_mmap_base, vma_size);
 
@@ -607,6 +610,61 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 
 	return 0;
 }
+#else
+static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	pgd_t *pgd;
+	pud_t *pud;
+	pmd_t *pmd;
+	unsigned long mmap_base;
+	struct mm_struct *mm = vma->vm_mm;
+	struct vm_device *vm = file_to_vm(file);
+	struct vmtag *info = &vm->vmtag;
+	unsigned long addr = vma->vm_start, end;
+	unsigned long vma_size = vma->vm_end - vma->vm_start;
+
+	if ((!vm) || (!info->mem_size))
+		return -ENOENT;
+
+	if (vma->vm_start & (vm->guest_page_size -1))
+		return -EINVAL;
+
+	if (vma_size & (vm->guest_page_size - 1))
+		return -EINVAL;
+
+	pr_debug("vm-%d map 0x%lx -> 0x%lx size:0x%lx\n",
+			vm->vmid, vma->vm_start,
+			vm->vm0_mmap_base, vma_size);
+	/*
+	 * for arm32 if LPAE is not enabled kernel will 2 levels
+	 * page table, if mapped as section each entry will map
+	 * 1M memory section. currently MINOS do not support LPAE
+	 *
+	 * LPAE support need to implemented later
+	 */
+	vma->vm_flags |= 0x80000000 |
+		VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
+	vma->vm_flags &= ~VM_MAYWRITE;
+	mmap_base = vm->vm0_mmap_base;
+
+	pgd = pgd_offset(mm, addr);
+	pud = pud_offset(pgd, addr);
+	pmd = pmd_offset(pud, addr);
+
+	do {
+		pmd[0] = __pmd(mmap_base | PMD_TYPE_SECT | PMD_SECT_AP_WRITE);
+		mmap_base += SZ_1M;
+		pmd[1] = __pmd(mmap_base | PMD_TYPE_SECT | PMD_SECT_AP_WRITE);
+		mmap_base += SZ_1M;
+		flush_pmd_entry(pmd);
+
+		addr += PMD_SIZE;
+		pmd += 2;
+	} while (addr < end);
+
+	return 0;
+}
+#endif
 
 struct file_operations vm_fops = {
 	.open			= vm_open,
@@ -687,7 +745,7 @@ static int vm0_mmap(struct file *file, struct vm_area_struct *vma)
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
 
 	if (vm_iomap_memory(vma, phy, size)) {
-		pr_err("map 0x%lx -> 0x%lx size:0x%lx failed\n",
+		pr_err("map 0x%lx -> 0x%lx size:0x%zx failed\n",
 			vma->vm_start, phy, size);
 		return -EAGAIN;
 	}

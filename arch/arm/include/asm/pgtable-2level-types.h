@@ -62,6 +62,22 @@ typedef pteval_t pgprot_t;
 #define __pmd(x)        (x)
 #define __pgprot(x)     (x)
 
+static inline int pmd_block_map(pmd_t *pmd)
+{
+	pmd_t vpmd = pmd_val(*pmd);
+
+	if (!vpmd)
+		return 0;
+
+	if (((vpmd & 0x03) != 0x2) && ((vpmd & 0x03) != 0x03))
+		return 0;
+
+	if (!(vpmd & (1 << 16)))
+		return 0;
+
+	return 1;
+}
+
 #endif /* STRICT_MM_TYPECHECKS */
 
 #endif	/* _ASM_PGTABLE_2LEVEL_TYPES_H */

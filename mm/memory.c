@@ -1233,6 +1233,20 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 	pmd = pmd_offset(pud, addr);
 	do {
 		next = pmd_addr_end(addr, end);
+
+#ifdef CONFIG_MINOS_HYPERVISOR_DRIVER
+		if (pmd_block_map(pmd) && (vma->vm_flags & VM_PFNMAP)) {
+			/*
+			 * if the VM_PFNMAP is set, indicate that the
+			 * huge page is directly mapped to a physical
+			 * address, just clear the pmd entry
+			 * TBD
+			 */
+			*pmd = 0;
+			goto next;
+		}
+#endif
+
 		if (pmd_trans_huge(*pmd)) {
 			if (next - addr != HPAGE_PMD_SIZE) {
 #ifdef CONFIG_DEBUG_VM
@@ -1245,16 +1259,6 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 				}
 #endif
 				split_huge_page_pmd(vma, addr, pmd);
-#ifdef CONFIG_MINOS_HYPERVISOR_DRIVER
-			} else if (vma->vm_flags & VM_PFNMAP) {
-				/*
-				 * if the VM_PFNMAP is set, indicate that the
-				 * huge page is directly mapped to a physical
-				 * address, just clear the pmd entry
-				 */
-				pmdp_huge_get_and_clear(tlb->mm, addr, pmd);
-				goto next;
-#endif
 			} else if (zap_huge_pmd(tlb, vma, pmd, addr))
 				goto next;
 			/* fall through */

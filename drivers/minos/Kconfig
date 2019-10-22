@@ -10,7 +10,6 @@ if MINOS
 
 config MINOS_HYPERVISOR_DRIVER
 	bool "Minos driver to commuicate the hypervisor"
-	depends on ARM64
 	default y
 
 endif
