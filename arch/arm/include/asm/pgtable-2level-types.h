@@ -72,9 +72,6 @@ static inline int pmd_block_map(pmd_t *pmd)
 	if (((vpmd & 0x03) != 0x2) && ((vpmd & 0x03) != 0x03))
 		return 0;
 
-	if (!(vpmd & (1 << 16)))
-		return 0;
-
 	return 1;
 }
 
