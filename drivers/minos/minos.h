@@ -161,4 +161,11 @@ static inline void hvc_change_log_level(unsigned int level)
 	minos_hvc1(HVC_CHANGE_LOG_LEVEL, level);
 }
 
+static inline void hvc_sched_out(void)
+{
+
+}
+
+int get_dynamic_virq(int irq);
+
 #endif

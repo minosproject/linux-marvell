@@ -4,11 +4,13 @@
 /* below defination is for HVC call */
 #define HVC_TYPE_HVC_VM0		(0x8)
 #define HVC_TYPE_HVC_MISC		(0x9)
+#define HVC_TYPE_HVC_VMBOX		(0xa)
 
 #define HVC_CALL_BASE			(0xc0000000)
 
 #define HVC_VM0_FN(n)			(HVC_CALL_BASE + (HVC_TYPE_HVC_VM0 << 24) + n)
 #define HVC_MISC_FN(n)			(HVC_CALL_BASE + (HVC_TYPE_HVC_MISC << 24) + n)
+#define HVC_VMBOX_FN(n)			(HVC_CALL_BASE + (HVC_TYPE_HVC_VMBOX << 24) + n)
 
 /* hypercall for vm releated operation */
 #define	HVC_VM_CREATE			HVC_VM0_FN(0)

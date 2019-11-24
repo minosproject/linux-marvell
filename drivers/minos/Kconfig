@@ -8,14 +8,10 @@ config MINOS
 
 if MINOS
 
-config MINOS_HYPERVISOR_DRIVER
-	bool "Minos driver to commuicate the hypervisor"
-	default y
-
-endif
-
 config VIRTIO_CONSOLE_EARLY_PRINTK
 	bool "early printk based on virtio console device"
 	default y
+
+endif
 
 endmenu
