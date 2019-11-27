@@ -129,7 +129,6 @@ static int vmbox_veth_start_xmit(struct sk_buff *skb,
 	else
 		vmbox_virtq_notify_avail(veth->tx_vq);
 
-	pr_info("veth: send %d bytes data id-%d\n", skb->len, buf.id);
 	ndev->stats.tx_bytes += skb->len;
 
 out:
@@ -187,7 +186,6 @@ static int vmbox_veth_stop(struct net_device *ndev)
 {
 	struct vmbox_veth *veth = netdev_priv(ndev);
 
-	pr_info("fe %s\n", __func__);
 	vmbox_device_ipc_event(veth->vdev, VMBOX_DEV_EVENT_CLOSED);
 
 	vmbox_virtq_shutdown(veth->rx_vq);
@@ -237,7 +235,6 @@ static void vmbox_veth_get_macaddr(struct vmbox_veth *veth)
 	struct vmbox_device *vdev = veth->vdev;
 	void *base = vmbox_device_vring_start(vdev);
 
-	pr_info("fe %s\n", __func__);
 	memcpy_fromio(veth->ndev->dev_addr, base, 6);
 }
 
@@ -268,7 +265,6 @@ static int vmbox_veth_rx_cb(struct vmbox_virtqueue *vq)
 			ndev->stats.rx_packets++;
 			ndev->stats.rx_bytes += buf.size;
 			netif_rx(skb);
-			pr_info("veth: receive %ld bytes\n", buf.size);
 		} else {
 			if (net_ratelimit())
 				dev_warn(&ndev->dev,
@@ -298,7 +294,8 @@ static int vmbox_veth_tx_cb(struct vmbox_virtqueue *vq)
 			break;
 
 		vmbox_virtq_detach_buf(vq, &buf, 1);
-		pr_info("veth: recall one buffer %d\n", buf.id);
+		veth->ndev->stats.tx_packets++;
+		pr_debug("veth: recall one buffer %d\n", buf.id);
 	}
 	spin_unlock_irqrestore(&veth->tx_lock, flags);
 
