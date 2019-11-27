@@ -202,6 +202,7 @@ int vmbox_device_init(struct vmbox_device *vdev, unsigned long flags)
 {
 	int i;
 	struct vmbox_virtqueue *vq;
+	struct vmbox_driver *vdrv = to_vmbox_driver(vdev->dev.driver);
 
 	if (!vdev)
 		return -EINVAL;
@@ -233,6 +234,11 @@ int vmbox_device_init(struct vmbox_device *vdev, unsigned long flags)
 		vmbox_virtq_init(vdev, vq, i);
 		vdev->vqs[i] = vq;
 	}
+
+	if (vdrv->setup_vq)
+		vdrv->setup_vq(vdev);
+	else
+		dev_warn(&vdev->dev, "no virtqueue setup function\n");
 
 	return 0;
 
@@ -307,7 +313,8 @@ int vmbox_device_online(struct vmbox_device *vdev)
 	 * only request the vring irq if this vmbox device
 	 * using virtq to transfer data between VMs
 	 */
-	if (!(vdev->flags & VMBOX_F_NO_VIRTQ)) {
+	if (!(vdev->flags & VMBOX_F_NO_VIRTQ) && !(vdev->flags &
+				VMBOX_F_VRING_IRQ_MANUAL)) {
 		ret = request_irq(vdev->vring_irq, vmbox_vring_irq_handler,
 				IRQF_NO_SUSPEND,
 				dev_name(&vdev->dev), vdev);

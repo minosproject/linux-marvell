@@ -56,9 +56,6 @@ static inline unsigned long __minos_hvc(uint32_t id, unsigned long a0,
    return res.a0;
 }
 
-extern void minos_hvc_result1(void *x1);
-extern void minos_hvc_result2(void *x1, void *x2);
-
 #define minos_hvc(id, a, b, c, d, e, f) \
 	__minos_hvc(id, (unsigned long)(a), (unsigned long)(b), \
 		    (unsigned long)(c), (unsigned long)(d), \

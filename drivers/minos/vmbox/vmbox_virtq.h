@@ -60,7 +60,7 @@ struct vmbox_virtqueue {
 	uint16_t signalled_used;
 	uint16_t signalled_used_valid;
 
-	void (*callback)(struct vmbox_virtqueue *);
+	int (*callback)(struct vmbox_virtqueue *);
 };
 
 static inline unsigned int
@@ -151,7 +151,7 @@ int vmbox_virtq_get_avail_bufs(struct vmbox_virtqueue *vq,
 int vmbox_virtq_get_avail_buf(struct vmbox_virtqueue *vq,
 		struct vmbox_vring_buf *buf);
 
-void vmbox_virtq_detach_buffer(struct vmbox_virtqueue *vq,
+void vmbox_virtq_detach_buf(struct vmbox_virtqueue *vq,
 		struct vmbox_vring_buf *buf, int cnt);
 
 bool vmbox_virtq_notify_avail(struct vmbox_virtqueue *vq);

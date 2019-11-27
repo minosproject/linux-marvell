@@ -126,7 +126,7 @@ int vmbox_virtq_get_vring_buf(struct vmbox_virtqueue *vq,
 	return 0;
 }
 
-void vmbox_virtq_detach_buffer(struct vmbox_virtqueue *vq,
+void vmbox_virtq_detach_buf(struct vmbox_virtqueue *vq,
 		struct vmbox_vring_buf *buf, int cnt)
 {
 	int i, x, y;
@@ -217,11 +217,14 @@ static inline int vmbox_virtq_add_buf(struct vmbox_virtqueue *vq,
 	int head;
 	int cnt = outs + ins;
 	struct vring_desc *desc;
-	unsigned int i, n, avail, prev;
+	unsigned int i, n, avail, prev = 0;
 	struct vmbox_vring_buf *vbuf = buf;
 
 	if (unlikely(vq->broken))
 		return -EIO;
+
+	if (cnt == 0)
+		return -EINVAL;
 
 	if (vq->num_free < cnt) {
 		vmbox_virtq_notify(vq);
@@ -232,7 +235,6 @@ static inline int vmbox_virtq_add_buf(struct vmbox_virtqueue *vq,
 	desc = vq->desc;
 
 	for (n = 0; n < outs; n++) {
-		pr_info("------------1 0x%p\n", &desc[i]);
 		desc[i].flags = VRING_DESC_F_NEXT;
 		desc[i].len = vbuf->size;
 		desc[i].addr = vbuf->id;
@@ -241,7 +243,6 @@ static inline int vmbox_virtq_add_buf(struct vmbox_virtqueue *vq,
 		vbuf++;
 	}
 
-	pr_info("------------2\n");
 	for (; n < cnt; n++) {
 		desc[i].flags = VRING_DESC_F_NEXT | VRING_DESC_F_WRITE;
 		desc[i].len = vbuf->size;
@@ -251,10 +252,8 @@ static inline int vmbox_virtq_add_buf(struct vmbox_virtqueue *vq,
 		vbuf++;
 	}
 
-	pr_info("------------3\n");
 	desc[prev].flags &= ~VRING_DESC_F_NEXT;
 
-	pr_info("------------4\n");
 	/* update the free number and the new head */
 	vq->num_free -= cnt;
 	vq->free_head = i;
@@ -597,9 +596,6 @@ void vmbox_virtq_init(struct vmbox_device *vdev,
 	int i;
 	void *vring_base;
 	int num = vdev->vring_num;
-	struct vmbox_driver *vdrv = to_vmbox_driver(vdev->dev.driver);
-
-	vmbox_device_remap(vdev);
 
 	vring_base = vmbox_vq_vring_base(vdev, index);
 	vq->vring_buf = vmbox_vq_buf_base(vdev, index);
@@ -619,22 +615,13 @@ void vmbox_virtq_init(struct vmbox_device *vdev,
 	vq->used = vring_base +
 		vmbox_virtq_vring_desc_size(num, VMBOX_VRING_ALIGN) +
 		vmbox_virtq_vring_avail_size(num, VMBOX_VRING_ALIGN);
-
-	if (vdrv->setup_vq)
-		vdrv->setup_vq(vdev, index);
-	else
-		dev_warn(&vdev->dev, "no virtqueue setup function\n");
-
 	/*
 	 * set up the TX vq
 	 */
-	if ((vq->direction == VMBOX_VIRTQ_OUT) ||
-		(vq->direction == VMBOX_VIRTQ_BOTH)) {
-		for (i = 0; i < num - 1; i++)
-			vq->desc[i].next = __cpu_to_virtio16(1, i + 1);
+	for (i = 0; i < num - 1; i++)
+		vq->desc[i].next = __cpu_to_virtio16(1, i + 1);
 
-		/* init the mask table set unused vring_buf bit to 1 */
-		for (i = 0; i < num; i++)
-			__vmbox_mask_vring_buf(vq, i % 8, i / 8);
-	}
+	/* init the mask table set unused vring_buf bit to 1 */
+	for (i = 0; i < num; i++)
+		__vmbox_mask_vring_buf(vq, i % 8, i / 8);
 }

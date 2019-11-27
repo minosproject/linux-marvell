@@ -58,6 +58,7 @@ struct vmbox_device_id {
 
 #define VMBOX_F_NO_VIRTQ		(1 << 0)
 #define VMBOX_F_DEV_BACKEND		(1 << 1)
+#define VMBOX_F_VRING_IRQ_MANUAL	(1 << 2)
 
 struct vmbox_device {
 	struct device dev;
@@ -78,17 +79,19 @@ struct vmbox_device {
 	struct vmbox_virtqueue **vqs;
 };
 
+#define vmbox_device_vring_start(vdev)	vdev->vring_va
+
 struct vmbox_driver {
 	struct device_driver driver;
 	const struct vmbox_device_id *id_table;
 	int (*probe)(struct vmbox_device *dev);
 	void (*remove)(struct vmbox_device *dev);
-	void (*setup_vq)(struct vmbox_device *dev, int index);
+	void (*setup_vq)(struct vmbox_device *dev);
 	int (*otherside_evt_handler)(struct vmbox_device *dev, uint32_t event);
 };
 
-#define vmbox_get_drvdata(d)	dev_get_drvdata(&d->dev)
-#define vmbox_set_drvdata(d,p)	dev_set_drvdata(&d->dev, p)
+#define vmbox_get_drvdata(d)	dev_get_drvdata(&(d)->dev)
+#define vmbox_set_drvdata(d,p)	dev_set_drvdata(&(d)->dev, p)
 
 static inline struct vmbox_device *to_vmbox_device(struct device *dev)
 {
