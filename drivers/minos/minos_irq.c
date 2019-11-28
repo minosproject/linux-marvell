@@ -55,7 +55,7 @@ int get_dynamic_virq(int irq)
 	if (!mdomain)
 		return 0;
 
-	return irq_create_mapping(mdomain, irq);
+	return irq_find_mapping(mdomain, irq);
 }
 
 static int minos_irq_init(void)
