@@ -232,10 +232,12 @@ static const struct ethtool_ops vmbox_ethtool_ops = {
 
 static void vmbox_veth_get_macaddr(struct vmbox_veth *veth)
 {
-	struct vmbox_device *vdev = veth->vdev;
-	void *base = vmbox_device_vring_start(vdev);
+	u8 *base = veth->ndev->dev_addr;
 
-	memcpy_fromio(veth->ndev->dev_addr, base, 6);
+	eth_random_addr(base);
+	pr_info("vmbox_veth: MAC addr %2x:%2x:%2x:%2x:%2x:%2x\n",
+			base[0], base[1], base[2],
+			base[3], base[4], base[5]);
 }
 
 static int vmbox_veth_rx_cb(struct vmbox_virtqueue *vq)
@@ -376,19 +378,7 @@ static int vmbox_veth_probe(struct vmbox_device *vdev)
 	vmbox_set_drvdata(vdev, veth);
 	vmbox_device_remap(vdev);
 
-	/*
-	 * how to set the right mac address, here need a way
-	 * to done this, TBD
-	 */
-#if 1
-	eth_hw_addr_random(ndev);
-#else
 	vmbox_veth_get_macaddr(veth);
-	if (!is_valid_ether_addr(ndev->dev_addr)) {
-		pr_info("invalid mac addr using random\n");
-		eth_hw_addr_random(ndev);
-	}
-#endif
 
 	vmbox_device_init(vdev, 0);
 	vmbox_device_online(vdev);
