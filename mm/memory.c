@@ -1234,8 +1234,8 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 	do {
 		next = pmd_addr_end(addr, end);
 
-#ifdef CONFIG_MINOS_HYPERVISOR_DRIVER
-		if (pmd_block_map(pmd) && (vma->vm_flags & VM_PFNMAP)) {
+#ifdef CONFIG_MINOS
+		if ((pmd_val(*pmd) && !pmd_table(*pmd)) && (vma->vm_flags & VM_PFNMAP)) {
 			/*
 			 * if the VM_PFNMAP is set, indicate that the
 			 * huge page is directly mapped to a physical
