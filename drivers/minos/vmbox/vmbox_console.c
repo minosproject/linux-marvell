@@ -395,7 +395,7 @@ static int __init vmbox_hvc_console_init(void)
 
 	pr_info("vmbox hvc console init for frontend\n");
 
-	node = of_find_compatible_node(of_root, NULL, "minos,hvc");
+	node = of_find_compatible_node(NULL, NULL, "minos,hvc");
 	if (!node) {
 		pr_err("can not find the hvc console device\n");
 		return -ENOENT;

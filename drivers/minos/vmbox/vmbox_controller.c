@@ -55,7 +55,11 @@ static int vmbox_get_device_info(struct vmbox_device *vdev)
 	vdev->vring_mem_size = readl(vdev->iomem + VMBOX_DEV_MEM_SIZE);
 	high = readl(vdev->iomem + VMBOX_DEV_VRING_BASE_HI);
 	low = readl(vdev->iomem + VMBOX_DEV_VRING_BASE_LOW);
+#ifdef CONFIG_64BIT
 	vdev->vring_pa = (void *)((high << 32) | low);
+#else
+	vdev->vring_pa = (void *)low;
+#endif
 	vdev->id.device = readl(vdev->iomem + VMBOX_DEV_DEVICE_ID);
 	vdev->id.vendor = readl(vdev->iomem + VMBOX_DEV_VENDOR_ID);
 

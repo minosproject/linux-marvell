@@ -172,7 +172,7 @@ void *vmbox_device_remap(struct vmbox_device *vdev)
 	 * memory
 	 */
 	if (vdev->vring_pa) {
-		vdev->vring_va = ioremap_cache((phys_addr_t)vdev->vring_pa,
+		vdev->vring_va = ioremap_cache((unsigned long)vdev->vring_pa,
 				vdev->vring_mem_size);
 	}
 

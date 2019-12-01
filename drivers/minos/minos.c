@@ -88,11 +88,11 @@ static DEFINE_MUTEX(vm_mutex);
 		return sprintf(buf, format, info->_member); \
 	}
 
-VM_INFO_SHOW(mem_base, "0x%lx\n")
-VM_INFO_SHOW(flags, "0x%lx\n")
-VM_INFO_SHOW(mem_size, "0x%lx\n")
-VM_INFO_SHOW(entry, "0x%p\n")
-VM_INFO_SHOW(setup_data, "0x%p\n")
+VM_INFO_SHOW(mem_base, "0x%llx\n")
+VM_INFO_SHOW(flags, "0x%llx\n")
+VM_INFO_SHOW(mem_size, "0x%llx\n")
+VM_INFO_SHOW(entry, "0x%llx\n")
+VM_INFO_SHOW(setup_data, "0x%llx\n")
 VM_INFO_SHOW(nr_vcpu, "%d\n")
 VM_INFO_SHOW(name, "%s\n")
 VM_INFO_SHOW(os_type, "%s\n")
@@ -335,7 +335,7 @@ static int unregister_vm_event(struct vm_device *vm, int irq)
 		return -ENODEV;
 	}
 
-	virq = platform_get_irq(mpdev, irq - MVM_EVENT_ID_BASE);
+	virq = get_dynamic_virq(irq);
 	if (!irq) {
 		pr_err("can not get the irq of device\n");
 		return -ENOENT;
@@ -380,7 +380,7 @@ static int register_vm_event(struct vm_device *vm, int eventfd, int irq)
 	event->ctx = ctx;
 	event->vm = vm;
 
-	virq = platform_get_irq(mpdev, irq - MVM_EVENT_ID_BASE);
+	virq = get_dynamic_virq(irq);
 	if (!irq) {
 		pr_err("can not get the irq of device\n");
 		return -ENOENT;
@@ -451,7 +451,7 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	case IOCTL_REGISTER_VCPU:
 		if (copy_from_user((void *)kernel_arg, (void *)arg,
-				sizeof(unsigned long) * 1))
+				sizeof(unsigned long) * 2))
 			return -EINVAL;
 
 		return register_vm_event(vm, kernel_arg[0], kernel_arg[1]);
@@ -541,20 +541,22 @@ mvm_get_unmapped_area(struct file *file, unsigned long addr,
 	return vm_unmapped_area(&info);
 }
 
-#ifdef CONFIG_ARM64
-static pte_t *mvm_pmd_alloc(struct mm_struct *mm, unsigned long addr)
+static pmd_t *mvm_pmd_alloc(struct mm_struct *mm, unsigned long addr)
 {
 	pgd_t *pgd;
 
 	pgd = pgd_offset(mm, addr);
 	if (pgd_val(*pgd)) {
-		return (pte_t *)pmd_offset((pud_t *)pgd, addr);
+		return (pmd_t *)pmd_offset((pud_t *)pgd, addr);
 	} else
-		return (pte_t *)pmd_alloc(mm, (pud_t *)pgd, addr);
+		return (pmd_t *)pmd_alloc(mm, (pud_t *)pgd, addr);
 }
 
+#ifdef CONFIG_ARM64
 static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 {
+	pmd_t *ptep;
+	int i, count;
 	pmd_t pmd;
 	unsigned long offset, mmap_base, addr;
 	struct mm_struct *mm = vma->vm_mm;
@@ -610,7 +612,7 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 
 	return 0;
 }
-#else
+#elif !defined(CONFIG_ARM64) && !defined(CONFIG_ARM_LPAE)
 static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 {
 	pgd_t *pgd;
@@ -620,7 +622,7 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 	struct mm_struct *mm = vma->vm_mm;
 	struct vm_device *vm = file_to_vm(file);
 	struct vmtag *info = &vm->vmtag;
-	unsigned long addr = vma->vm_start, end;
+	unsigned long addr = vma->vm_start, end = vma->vm_end;
 	unsigned long vma_size = vma->vm_end - vma->vm_start;
 
 	if ((!vm) || (!info->mem_size))
@@ -632,15 +634,14 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 	if (vma_size & (vm->guest_page_size - 1))
 		return -EINVAL;
 
-	pr_debug("vm-%d map 0x%lx -> 0x%lx size:0x%lx\n",
+	pr_info("vm-%d map 0x%lx -> 0x%lx size:0x%lx\n",
 			vm->vmid, vma->vm_start,
 			vm->vm0_mmap_base, vma_size);
 	/*
 	 * for arm32 if LPAE is not enabled kernel will 2 levels
 	 * page table, if mapped as section each entry will map
-	 * 1M memory section. currently MINOS do not support LPAE
-	 *
-	 * LPAE support need to implemented later
+	 * 1M memory section. currently non LAPE has not been tested
+	 * there may some issue TBF
 	 */
 	vma->vm_flags |= 0x80000000 |
 		VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
@@ -661,6 +662,73 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 		addr += PMD_SIZE;
 		pmd += 2;
 	} while (addr < end);
+
+	flush_cache_vmap(vma->vm_start, vma->vm_end);
+
+	return 0;
+}
+#else
+static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	pte_t *ptep;
+	int i, count;
+	pmd_t pmd;
+	unsigned long offset, mmap_base, addr;
+	struct mm_struct *mm = vma->vm_mm;
+	struct vm_device *vm = file_to_vm(file);
+	struct vmtag *info = &vm->vmtag;
+	unsigned long vma_size = vma->vm_end - vma->vm_start;
+
+	/*
+	 * now minos only support 1M Section for aarch32 so using
+	 * pmd mapping, the va_start must PUD size align
+	 */
+	if ((!vm) || (!info->mem_size))
+		return -ENOENT;
+
+	if (vma->vm_start & (vm->guest_page_size - 1))
+		return -EINVAL;
+
+	if (vma_size & (vm->guest_page_size - 1))
+		return -EINVAL;
+
+	pr_info("vm-%d map 0x%lx -> 0x%lx size:0x%lx\n",
+			vm->vmid, vma->vm_start,
+			vm->vm0_mmap_base, vma_size);
+
+	vma_size = vma_size >> PMD_SHIFT;
+	mmap_base = vm->vm0_mmap_base;
+	vma->vm_flags |= VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
+	vma->vm_flags &= ~(VM_MAYWRITE);
+	addr = vma->vm_start;
+
+	flush_cache_range(vma, vma->vm_start, vma->vm_end);
+
+	while (vma_size > 0) {
+		ptep = mvm_pmd_alloc(mm, addr);
+		if (!ptep)
+			BUG_ON(!ptep);
+
+		offset = pmd_index(addr);
+		count = PTRS_PER_PMD - offset;
+		count = count > vma_size ? vma_size : count;
+
+		for (i = 0; i < count; i++) {
+			pmd = mmap_base | PMD_TYPE_SECT | PMD_SECT_AP_WRITE |
+				L_PMD_SECT_DIRTY | L_PMD_SECT_VALID |
+				PMD_SECT_USER | PMD_SECT_AF | PMD_SECT_S |
+				PMD_SECT_PXN | PMD_SECT_XN | PMD_SECT_WBWA;
+			*ptep = pmd;
+			flush_pmd_entry(ptep);
+			mmap_base += PMD_SIZE;
+			addr += PMD_SIZE;
+			ptep++;
+		}
+
+		vma_size -= count;
+	}
+
+	flush_cache_vmap(vma->vm_start, vma->vm_end);
 
 	return 0;
 }
@@ -705,25 +773,28 @@ static int create_new_vm(struct vmtag *info)
 
 static long vm0_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	int ret, vmid;
-	struct vmtag vmtag;
+	int ret, vmid = -EINVAL;
+	struct vmtag *vmtag;
 
 	switch (cmd) {
 	case IOCTL_CREATE_VM:
-		memset(&vmtag, 0, sizeof(struct vmtag));
-		ret = copy_from_user(&vmtag, (void *)arg, sizeof(struct vmtag));
+		vmtag = kzalloc(sizeof(*vmtag), GFP_KERNEL);
+		if (!vmtag)
+			return -ENOMEM;
+
+		ret = copy_from_user(vmtag, (void *)arg, sizeof(struct vmtag));
 		if (ret)
-			return -EINVAL;
+			goto out_create;
 
-		vmid = create_new_vm(&vmtag);
-		if (vmid <= 0)
-			return vmid;
+		vmid = create_new_vm(vmtag);
+		if (vmid <= -1)
+			goto out_create;
 
-		ret = copy_to_user((void *)arg, (void *)&vmtag,
-				sizeof(struct vmtag));
+		ret = copy_to_user((void *)arg, (void *)vmtag, sizeof(*vmtag));
 		if (ret)
 			pr_err("copy vm info to user failed\n");
-
+out_create:
+		kfree(vmtag);
 		return vmid;
 
 	case IOCTL_DESTROY_VM:
@@ -735,6 +806,13 @@ static long vm0_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	return -EINVAL;
 }
+
+#ifdef CONFIG_COMPAT
+static long vm0_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	return vm0_ioctl(filp, cmd, (unsigned long)compat_ptr(arg));
+}
+#endif
 
 static int vm0_mmap(struct file *file, struct vm_area_struct *vma)
 {
@@ -757,6 +835,9 @@ static struct file_operations vm0_fops = {
 	.open		= vm0_open,
 	.release	= vm0_release,
 	.unlocked_ioctl = vm0_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl	= vm0_compat_ioctl,
+#endif
 	.mmap		= vm0_mmap,
 	.owner		= THIS_MODULE,
 };
