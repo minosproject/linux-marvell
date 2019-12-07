@@ -1242,7 +1242,11 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 			 * address, just clear the pmd entry
 			 * TBD
 			 */
+#if CONFIG_ARM64
+			pmd->pmd = 0;
+#else
 			*pmd = 0;
+#endif
 			goto next;
 		}
 #endif
