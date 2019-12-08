@@ -291,9 +291,7 @@ static irqreturn_t vmbox_ipc_irq_handler(int irq, void *dev_id)
 static void inline __vmbox_device_online(struct vmbox_device *vdev)
 {
 	vdev->state = VMBOX_DEV_STAT_ONLINE;
-
-	if (vmbox_device_is_backend(vdev))
-		writel(1, vdev->iomem + VMBOX_DEV_BACKEND_ONLINE);
+	writel(1, vdev->iomem + VMBOX_DEV_VDEV_ONLINE);
 }
 
 int vmbox_device_online(struct vmbox_device *vdev)

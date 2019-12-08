@@ -86,7 +86,7 @@ static int vmbox_hvc_read_console(uint32_t vtermno, char *buf, int count)
 	uint32_t ridx, widx, size, recv = 0;
 	char *buffer;
 
-	if (vc->backend) {
+	if (!vc->backend) {
 		ridx = ring->out_read;
 		widx = ring->out_write;
 		buffer = ring->out;
@@ -106,7 +106,7 @@ static int vmbox_hvc_read_console(uint32_t vtermno, char *buf, int count)
 		buf[recv++] = buffer[VMBOX_CONSOLE_IDX(ridx++, size)];
 
 	mb();
-	if (vc->backend)
+	if (!vc->backend)
 		ring->out_read = ridx;
 	else
 		ring->in_read = ridx;
@@ -125,7 +125,7 @@ static int vmbox_hvc_write_console(uint32_t vtermno, const char *buf, int count)
 	char *buffer;
 	int len = count;
 
-	if (!vc->backend) {
+	if (vc->backend) {
 		buffer = ring->out;
 		size = sizeof(ring->out);
 	} else {
@@ -134,7 +134,7 @@ static int vmbox_hvc_write_console(uint32_t vtermno, const char *buf, int count)
 	}
 
 	while (count) {
-		if (!vc->backend) {
+		if (vc->backend) {
 			ridx = ring->out_read;
 			widx = ring->out_write;
 		} else {
@@ -144,7 +144,7 @@ static int vmbox_hvc_write_console(uint32_t vtermno, const char *buf, int count)
 		mb();
 
 		/* in case overflow alway happend in frontend side */
-		if (((widx - ridx) == size) && !vc->backend && !vc->otherside_state) {
+		if (((widx - ridx) == size) && vc->backend && !vc->otherside_state) {
 			ridx += count;
 			ring->out_read = ridx;
 			wmb();
@@ -154,7 +154,7 @@ static int vmbox_hvc_write_console(uint32_t vtermno, const char *buf, int count)
 			buffer[VMBOX_CONSOLE_IDX(widx++, size)] = buf[send++];
 
 		wmb();
-		if (!vc->backend)
+		if (vc->backend)
 			ring->out_write = widx;
 		else
 			ring->in_write = widx;
@@ -170,9 +170,9 @@ static int vmbox_hvc_write_console(uint32_t vtermno, const char *buf, int count)
 		 * read the data, it will send a RX message to this VM, then it
 		 * can be waked up
 		 */
-		if (count && (vc->otherside_state)) {
+		if (count && (!vc->otherside_state)) {
 			hvc_sched_out();
-		} else if (count && (!vc->otherside_state) && vc->vdev) {
+		} else if (count && vc->otherside_state && vc->vdev) {
 			vmbox_device_ipc_event(vc->vdev,
 					VMBOX_HVC_EVENT_TX_FULL);
 		}
@@ -261,10 +261,35 @@ static int vmbox_hvc_vring_init(struct vmbox_console *vc)
 	return 0;
 }
 
+static int vm0_read_console(uint32_t vtermno, char *buf, int count)
+{
+	return 0;
+}
+
+static int vm0_write_console(uint32_t vtermno, const char *buf, int count)
+{
+	return count;
+}
+
+static const struct hv_ops vm0_hvc_ops = {
+	.get_chars = vm0_read_console,
+	.put_chars = vm0_write_console,
+};
+
 static int vmbox_hvc_probe(struct vmbox_device *vdev)
 {
 	struct hvc_struct *hp;
 	struct vmbox_console *vc;
+	static int need_init = 1;
+
+	pr_info("do vmbox hvc probe\n");
+
+	if ((get_vmid() == 0) && need_init) {
+		pr_info("register a fake hvc for vm0\n");
+		need_init = 0;
+		hvc_alloc(VMBOX_HVC_COOLIE + 0xff, 0, &vm0_hvc_ops, 16);
+		hvc_index++;
+	}
 
 	/*
 	 * if the hvc in this VM is a forentend this hvc console
@@ -393,9 +418,16 @@ static int __init vmbox_hvc_console_init(void)
 	struct vmbox_console *vc;
 	struct hvc_ring *console_ring;
 
-	pr_info("vmbox hvc console init for frontend\n");
+	pr_info("vmbox hvc console init for backend\n");
 
-	node = of_find_compatible_node(NULL, NULL, "minos,hvc");
+	/*
+	 * to detected whether there is a vmbox hvc froent
+	 * device, if yes, register it, the hvc index will start
+	 * at 0, otherwise, it means this vm is HVM, the hvc console
+	 * index whill start at 1, since systemd will automaticlly
+	 * open hvc0
+	 */
+	node = of_find_compatible_node(NULL, NULL, "minos,hvc-be");
 	if (!node) {
 		pr_err("can not find the hvc console device\n");
 		return -ENOENT;
@@ -414,6 +446,7 @@ static int __init vmbox_hvc_console_init(void)
 	if (!vc)
 		return -ENOMEM;
 
+	vc->backend = 1;
 	vc->ring = console_ring;
 	vc->vetrmno = VMBOX_HVC_COOLIE + 0;
 	console_ring->out_read = 0;
@@ -421,8 +454,11 @@ static int __init vmbox_hvc_console_init(void)
 	console_ring->in_read = 0;
 	console_ring->out_write = 0;
 	hvc_consoles[hvc_index] = vc;
+	wmb();
 
 	hvc_instantiate(VMBOX_HVC_COOLIE + 0, 0, &vmbox_hvc_ops);
+	add_preferred_console("hvc", 0, NULL);
+
 	return 0;
 }
 console_initcall(vmbox_hvc_console_init);

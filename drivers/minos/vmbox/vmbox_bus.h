@@ -43,7 +43,7 @@
 #define VMBOX_DEV_IPC_EVENT		0x30	/* WO trigger a config event */
 #define VMBOX_DEV_IPC_TYPE		0x34	/* RW */
 #define VMBOX_DEV_IPC_ACK		0x38	/* event ack */
-#define VMBOX_DEV_BACKEND_ONLINE	0x3C	/* only for client device */
+#define VMBOX_DEV_VDEV_ONLINE		0x3C	/* only for client device */
 
 #define VMBOX_DEV_EVENT_ONLINE		0x1
 #define VMBOX_DEV_EVENT_OFFLINE		0x2
