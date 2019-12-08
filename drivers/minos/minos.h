@@ -163,6 +163,11 @@ static inline void hvc_sched_out(void)
 
 }
 
+static inline int get_vmid(void)
+{
+	return (int)minos_hvc0(HVC_GET_VMID);
+}
+
 int get_dynamic_virq(int irq);
 
 #endif
