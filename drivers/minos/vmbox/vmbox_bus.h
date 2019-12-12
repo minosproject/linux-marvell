@@ -7,9 +7,12 @@
 #define VMBOX_ANY_DEV_ID	0xffff
 #define VMBOX_ANY_VENDOR_ID	0xffff
 
-#define VMBOX_DEV_STAT_OFFLINE		0
-#define VMBOX_DEV_STAT_ONLINE		1
-#define VMBOX_DEV_STAT_CONNECTED	2
+enum {
+	VMBOX_DEV_STAT_OFFLINE = 0,
+	VMBOX_DEV_STAT_ONLINE,
+	VMBOX_DEV_STAT_OPENED,
+	VMBOX_DEV_STAT_CLOSED,
+};
 
 /*
  * below are the defination of the vmbox controller
@@ -41,15 +44,22 @@
 #define VMBOX_DEV_IPC_IRQ		0x28	/* RO */
 #define VMBOX_DEV_VRING_EVENT		0x2c	/* WO trigger a vring event */
 #define VMBOX_DEV_IPC_EVENT		0x30	/* WO trigger a config event */
-#define VMBOX_DEV_IPC_TYPE		0x34	/* RW */
-#define VMBOX_DEV_IPC_ACK		0x38	/* event ack */
-#define VMBOX_DEV_VDEV_ONLINE		0x3C	/* only for client device */
+#define VMBOX_DEV_VDEV_ONLINE		0x34	/* only for client device */
+#define VMBOX_DEV_IPC_TYPE		0x38	/* the event type, read and clear */
 
-#define VMBOX_DEV_EVENT_ONLINE		0x1
-#define VMBOX_DEV_EVENT_OFFLINE		0x2
-#define VMBOX_DEV_EVENT_OPENED		0x3
-#define VMBOX_DEV_EVENT_CLOSED		0x4
-#define VMBOX_DEV_EVENT_USER_BASE	0x1000
+#define VMBOX_DEV_IPC_COUNT		32
+
+#define VMBOX_IPC_STATE_CHANGE		0x0
+#define VMBOX_IPC_USER_BASE		0x8
+#define VMBOX_IPC_USER_EVENT(n)		(n + VMBOX_IPC_USER_BASE)
+
+struct vmbox_ipc_entry {
+	volatile uint32_t state;
+	char buf[0];
+};
+
+#define VMBOX_IPC_PER_ENTRY_SZIE	0x80
+#define VMBOX_IPC_ALL_ENTRY_SIZE	0x100		// 0x80 * 2
 
 struct vmbox_device_id {
 	u32 device;
@@ -64,11 +74,27 @@ struct vmbox_device {
 	struct device dev;
 	int index;
 	struct vmbox_device_id id;
+
+	/*
+	 * iomem     - the device regs in vmbox controller space
+	 * vring     - the memory for data transfer and ipc event
+	 * ipc_in    - the ipc event from otherside
+	 * ipc_out   - the ipc event to otherside
+	 * data_base - the memory that driver can use
+	 */
 	void *iomem;
+
 	size_t vring_mem_size;
 	void *vring_pa;
 	void *vring_va;
-	int state;
+	void *data_base;
+
+	struct vmbox_ipc_entry *ipc_in;
+	struct vmbox_ipc_entry *ipc_out;
+
+	struct workqueue_struct *workqueue;
+	struct work_struct ws;
+
 	int nr_vqs;
 	int vring_num;
 	int vring_size;
@@ -79,7 +105,13 @@ struct vmbox_device {
 	struct vmbox_virtqueue **vqs;
 };
 
-#define vmbox_device_vring_start(vdev)	vdev->vring_va
+#define vmbox_device_vring_start(vdev)		vdev->data_base
+#define vmbox_device_data_start(vdev)		vdev->data_base
+
+#define vmbox_device_state(vdev)		vdev->ipc_out->state
+#define vmbox_device_otherside_state(vdev)	vdev->ipc_in->state
+#define vmbox_device_otherside_open(vdev)	\
+	(vdev->ipc_in->state == VMBOX_DEV_STAT_OPENED)
 
 struct vmbox_driver {
 	struct device_driver driver;
@@ -88,6 +120,7 @@ struct vmbox_driver {
 	void (*remove)(struct vmbox_device *dev);
 	void (*setup_vq)(struct vmbox_device *dev);
 	int (*otherside_evt_handler)(struct vmbox_device *dev, uint32_t event);
+	int (*otherside_state_change)(struct vmbox_device *dev, int state);
 };
 
 #define vmbox_get_drvdata(d)	dev_get_drvdata(&(d)->dev)
@@ -114,25 +147,22 @@ int vmbox_device_init(struct vmbox_device *vdev, unsigned long flags);
 void *vmbox_device_remap(struct vmbox_device *vdev);
 void vmbox_device_unmap(struct vmbox_device *vdev);
 
+int vmbox_device_ipc_event(struct vmbox_device *vdev, int event);
+int vmbox_device_vring_event(struct vmbox_device *vdev);
+
+void vmbox_device_state_change(struct vmbox_device *vdev, int state);
+
 static int inline vmbox_device_is_backend(struct vmbox_device *vdev)
 {
 	return (vdev->flags & VMBOX_F_DEV_BACKEND);
 }
 
-static void inline
-vmbox_device_ipc_event(struct vmbox_device *vdev, int event)
-{
-	writel(event, vdev->iomem + VMBOX_DEV_IPC_EVENT);
-}
-
-static void inline vmbox_device_vring_event(struct vmbox_device *vdev)
-{
-	writel(1, vdev->iomem + VMBOX_DEV_VRING_EVENT);
-}
+int vmbox_device_online(struct vmbox_device *vdev);
+int vmbox_device_ipc_event(struct vmbox_device *vdev, int event);
 
 static void inline vmbox_device_offline(struct vmbox_device *vdev)
 {
-	vmbox_device_ipc_event(vdev, VMBOX_DEV_EVENT_OFFLINE);
+	vmbox_device_state_change(vdev, VMBOX_DEV_STAT_OFFLINE);
 }
 
 #define module_vmbox_driver(__vmbox_driver) \

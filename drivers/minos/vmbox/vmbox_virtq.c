@@ -573,7 +573,7 @@ static inline void *vmbox_vq_vring_base(struct vmbox_device *vdev, int index)
 {
 	size_t size = vmbox_virtq_vring_size(vdev->vring_num, VMBOX_VRING_ALIGN);
 
-	return vdev->vring_va + index * size;
+	return vdev->data_base + index * size;
 }
 
 static inline void *vmbox_vq_buf_base(struct vmbox_device *vdev, int index)
@@ -584,7 +584,7 @@ static inline void *vmbox_vq_buf_base(struct vmbox_device *vdev, int index)
 			VMBOX_VRING_ALIGN);
 
 	total_size = size * vdev->nr_vqs;
-	base = vdev->vring_va + total_size;
+	base = vdev->data_base + total_size;
 	base += (vdev->vring_size * vdev->vring_num) * index;
 
 	return base;

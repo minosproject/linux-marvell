@@ -51,7 +51,6 @@ enum vmbox_veth_state {
 struct vmbox_veth {
 	u32 msg_enable;
 	u32 wake_state;
-	int otherside_state;
 	struct net_device *ndev;
 	struct vmbox_device *vdev;
 	struct vmbox_virtqueue *rx_vq;
@@ -88,7 +87,6 @@ copy_iodata_from_skb(struct vmbox_vring_buf *buf, struct sk_buff *skb)
 
 #define vmbox_dev_to_veth(vdev)	(struct vmbox_veth *)vmbox_get_drvdata(vdev)
 
-
 static int vmbox_veth_start_xmit(struct sk_buff *skb,
 		struct net_device *ndev)
 {
@@ -97,8 +95,8 @@ static int vmbox_veth_start_xmit(struct sk_buff *skb,
 	struct vmbox_vring_buf buf;
 	struct vmbox_veth *veth = netdev_priv(ndev);
 
-	if (!veth->otherside_state) {
-		dev_warn(&ndev->dev, "vmbox veth backend not ready\n");
+	if (!vmbox_device_otherside_open(veth->vdev)) {
+		dev_err(&ndev->dev, "vmbox veth backend not ready\n");
 		goto out;
 	}
 
@@ -169,7 +167,7 @@ static int vmbox_veth_open(struct net_device *ndev)
 	vmbox_virtq_startup(veth->tx_vq);
 
 	enable_irq(veth->vdev->vring_irq);
-	vmbox_device_ipc_event(veth->vdev, VMBOX_DEV_EVENT_OPENED);
+	vmbox_device_state_change(veth->vdev, VMBOX_DEV_STAT_OPENED);
 
 	if (netif_queue_stopped(ndev)) {
 		dev_dbg(&ndev->dev, " resuming queue\n");
@@ -186,7 +184,7 @@ static int vmbox_veth_stop(struct net_device *ndev)
 {
 	struct vmbox_veth *veth = netdev_priv(ndev);
 
-	vmbox_device_ipc_event(veth->vdev, VMBOX_DEV_EVENT_CLOSED);
+	vmbox_device_state_change(veth->vdev, VMBOX_DEV_STAT_CLOSED);
 
 	vmbox_virtq_shutdown(veth->rx_vq);
 	vmbox_virtq_shutdown(veth->tx_vq);
@@ -261,6 +259,7 @@ static int vmbox_veth_rx_cb(struct vmbox_virtqueue *vq)
 			goto out;
 
 		skb = netdev_alloc_skb(veth->ndev, buf.size);
+		pr_info("veth  get %d buf\n", buf.size);
 		if (likely(skb)) {
 			copy_data_to_skb(&buf, skb);
 			skb->protocol = eth_type_trans(skb, ndev);
@@ -322,21 +321,19 @@ static void vmbox_veth_setup_vq(struct vmbox_device *vdev)
 			veth->tx_vq->index, veth->rx_vq->index);
 }
 
-static int vmbox_veth_evt_handler(struct vmbox_device *dev, uint32_t event)
+static int vmbox_veth_state_change(struct vmbox_device *dev, int state)
 {
 	struct vmbox_veth *veth = vmbox_get_drvdata(dev);
 
-	switch (event) {
-	case VMBOX_DEV_EVENT_OPENED:
-		veth->otherside_state = VETH_STAT_OPENED;
+	switch (state) {
+	case VMBOX_DEV_STAT_OPENED:
 		if (!vmbox_device_is_backend(dev)) {
 			netif_carrier_on(veth->ndev);
 			dev_info(&veth->ndev->dev, "%s: link up, 1000Mbps\n",
 					veth->ndev->name);
 		}
 		break;
-	case VMBOX_DEV_EVENT_CLOSED:
-		veth->otherside_state = VETH_STAT_CLOSED;
+	case VMBOX_DEV_STAT_CLOSED:
 		if (!vmbox_device_is_backend(dev)) {
 			netif_carrier_off(veth->ndev);
 			dev_info(&veth->ndev->dev, "%s: link down\n",
@@ -419,7 +416,7 @@ static struct vmbox_driver vmbox_veth_drv = {
 	.id_table 		= vmbox_veth_ids,
 	.probe 			= vmbox_veth_probe,
 	.remove			= vmbox_veth_remove,
-	.otherside_evt_handler 	= vmbox_veth_evt_handler,
+	.otherside_state_change = vmbox_veth_state_change,
 	.setup_vq 		= vmbox_veth_setup_vq,
 	.driver = {
 		.name = "vmbox-veth",

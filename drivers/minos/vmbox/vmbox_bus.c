@@ -20,6 +20,7 @@
 #include <linux/slab.h>
 #include <linux/init.h>
 #include <linux/of.h>
+#include <linux/workqueue.h>
 #include <linux/interrupt.h>
 #include <linux/mod_devicetable.h>
 #include <linux/of_irq.h>
@@ -167,16 +168,38 @@ EXPORT_SYMBOL_GPL(vmbox_unregister_driver);
 
 void *vmbox_device_remap(struct vmbox_device *vdev)
 {
+	void *base = NULL;
+
+	if (vdev->vring_va) {
+		base = vdev->vring_va;
+		goto out;
+	}
+
 	/*
 	 * ioremap_cache will remap the memory as a normal
 	 * memory
 	 */
-	if (vdev->vring_pa) {
-		vdev->vring_va = ioremap_cache((unsigned long)vdev->vring_pa,
+	base = ioremap_cache((unsigned long)vdev->vring_pa,
 				vdev->vring_mem_size);
+	if (!base) {
+		pr_err("remap vmbox device memory failed\n");
+		return NULL;
 	}
 
-	return vdev->vring_va;
+	vdev->vring_va = base;
+out:
+	vdev->data_base = base + VMBOX_IPC_ALL_ENTRY_SIZE;
+	if (vmbox_device_is_backend(vdev)) {
+		vdev->ipc_out = (struct vmbox_ipc_entry *)base;
+		vdev->ipc_in = (struct vmbox_ipc_entry *)(base +
+				VMBOX_IPC_PER_ENTRY_SZIE);
+	} else {
+		vdev->ipc_in = (struct vmbox_ipc_entry *)base;
+		vdev->ipc_out = (struct vmbox_ipc_entry *)(base +
+				VMBOX_IPC_PER_ENTRY_SZIE);
+	}
+
+	return vdev->data_base;
 }
 
 void vmbox_device_unmap(struct vmbox_device *vdev)
@@ -198,16 +221,50 @@ static void vmbox_release_virtq(struct vmbox_device *vdev)
 	}
 }
 
+static void vmbox_ipc_event_work(struct work_struct *work)
+{
+	int event, bit;
+	struct vmbox_device *vdev = container_of(work, struct vmbox_device, ws);
+	struct vmbox_driver *drv = to_vmbox_driver(vdev->dev.driver);
+
+	if (!vmbox_device_state(vdev)) {
+		event = readl(vdev->iomem + VMBOX_DEV_IPC_TYPE);
+		dev_err(&vdev->dev, "device is not online 0x%x\n", event);
+		return;
+	}
+
+	event = readl(vdev->iomem + VMBOX_DEV_IPC_TYPE);
+
+	while (event != 0) {
+		bit = ffs(event) - 1;
+		if (bit == VMBOX_IPC_STATE_CHANGE) {
+			if (drv->otherside_state_change)
+				drv->otherside_state_change(vdev,
+					vmbox_device_otherside_state(vdev));
+		} else {
+			if (drv->otherside_evt_handler)
+				drv->otherside_evt_handler(vdev, bit);
+		}
+		event &= ~(1 << bit);
+	}
+}
+
 int vmbox_device_init(struct vmbox_device *vdev, unsigned long flags)
 {
 	int i;
 	struct vmbox_virtqueue *vq;
 	struct vmbox_driver *vdrv = to_vmbox_driver(vdev->dev.driver);
 
-	if (!vdev)
-		return -EINVAL;
+	INIT_WORK(&vdev->ws, vmbox_ipc_event_work);
+	vdev->workqueue = create_singlethread_workqueue(dev_name(&vdev->dev));
+	if (!vdev->workqueue) {
+		pr_err("unable create workqueue for vmbox device\n");
+		return -EBUSY;
+	}
 
-	vdev->state = VMBOX_DEV_STAT_OFFLINE;
+	if (!vdev->vring_va)
+		vmbox_device_remap(vdev);
+
 	vdev->flags |= flags;
 
 	if (vdev->flags & VMBOX_F_NO_VIRTQ) {
@@ -244,6 +301,7 @@ int vmbox_device_init(struct vmbox_device *vdev, unsigned long flags)
 
 release_vqs:
 	pr_err("can not alloc memory for vqs\n");
+	destroy_workqueue(vdev->workqueue);
 	vmbox_release_virtq(vdev);
 	return -ENOMEM;
 }
@@ -270,33 +328,62 @@ static irqreturn_t vmbox_vring_irq_handler(int irq, void *dev_id)
 
 static irqreturn_t vmbox_ipc_irq_handler(int irq, void *dev_id)
 {
-	int event, ret;
 	struct vmbox_device *vdev = (struct vmbox_device *)dev_id;
-	struct vmbox_driver *drv = to_vmbox_driver(vdev->dev.driver);
 
-	if (vdev->state != VMBOX_DEV_STAT_ONLINE) {
-		dev_err(&vdev->dev, "device is not online\n");
+	queue_work(vdev->workqueue, &vdev->ws);
+	return IRQ_HANDLED;
+}
+
+int vmbox_device_vring_event(struct vmbox_device *vdev)
+{
+	if (!vmbox_device_otherside_open(vdev)) {
+		pr_debug("other side is not opened\n");
 		return -EINVAL;
 	}
 
-	event = readl(vdev->iomem + VMBOX_DEV_IPC_TYPE);
-	writel(event, vdev->iomem + VMBOX_DEV_IPC_ACK);
+	writel(1, vdev->iomem + VMBOX_DEV_VRING_EVENT);
+	return 0;
+}
 
-	if (drv->otherside_evt_handler)
-		ret = drv->otherside_evt_handler(vdev, event);
+int vmbox_device_ipc_event(struct vmbox_device *vdev, int event)
+{
+	if (event >= VMBOX_DEV_IPC_COUNT)
+		return -EINVAL;
 
-	return IRQ_HANDLED;
+	writel(event, vdev->iomem + VMBOX_DEV_IPC_EVENT);
+	return 0;
+}
+
+void vmbox_device_state_change(struct vmbox_device *vdev, int state)
+{
+	vdev->ipc_out->state = state;
+	mb();
+	vmbox_device_ipc_event(vdev, VMBOX_IPC_STATE_CHANGE);
 }
 
 static void inline __vmbox_device_online(struct vmbox_device *vdev)
 {
-	vdev->state = VMBOX_DEV_STAT_ONLINE;
+	/*
+	 * for online event, if the device is backedn, then
+	 * it will write its ONLINE register to inform forent
+	 * side to online, otherwise, it will send a virq to
+	 * the backend
+	 */
+	vmbox_device_state(vdev) = VMBOX_DEV_STAT_ONLINE;
 	writel(1, vdev->iomem + VMBOX_DEV_VDEV_ONLINE);
+
+	if (!vmbox_device_is_backend(vdev))
+		vmbox_device_state_change(vdev, VMBOX_DEV_STAT_ONLINE);
 }
 
 int vmbox_device_online(struct vmbox_device *vdev)
 {
 	int ret;
+
+	/*
+	 * create a workqueue to handle the ipc event to
+	 * avoid deadlock
+	 */
 
 	ret = request_irq(vdev->event_irq, vmbox_ipc_irq_handler,
 			IRQF_NO_SUSPEND,

@@ -39,23 +39,26 @@
 #define VMBOX_HVC_STAT_CLOSED	0x0
 #define VMBOX_HVC_STAT_OPENED	0x1
 
-#define VMBOX_HVC_EVENT_HANGUP	(VMBOX_DEV_EVENT_USER_BASE + 0)
-#define VMBOX_HVC_EVENT_RX	(VMBOX_DEV_EVENT_USER_BASE + 1)
-#define VMBOX_HVC_EVENT_TX_FULL	(VMBOX_DEV_EVENT_USER_BASE + 2)
+#define VMBOX_HVC_EVENT_HANGUP	VMBOX_IPC_USER_EVENT(0)
+#define VMBOX_HVC_EVENT_RX	VMBOX_IPC_USER_EVENT(1)
+#define VMBOX_HVC_EVENT_TX_FULL	VMBOX_IPC_USER_EVENT(2)
 
 static struct vmbox_console *hvc_consoles[VMBOX_HVC_NR];
 static DEFINE_SPINLOCK(vmbox_console_lock);
 static int hvc_index;
+
+#define BUF_0_SIZE	4096
+#define BUF_1_SIZE	2048
 
 /*
  * at least 8K size for the transfer buffer, and
  * in or out buffer size need 2^ align
  */
 struct hvc_ring {
-	char in[2048];
-	char out[4096];
-	volatile uint32_t in_read, in_write;
-	volatile uint32_t out_read, out_write;
+	volatile uint32_t ridx;
+	volatile uint32_t widx;
+	uint32_t size;
+	char buf[0];
 };
 
 struct vmbox_console {
@@ -65,7 +68,8 @@ struct vmbox_console {
 	int vetrmno;
 	int backend;
 	int otherside_state;
-	struct hvc_ring *ring;
+	struct hvc_ring *tx;
+	struct hvc_ring *rx;
 };
 
 static inline struct
@@ -82,37 +86,23 @@ vmbox_console *vtermno_to_vmbox_console(uint32_t vtermno)
 static int vmbox_hvc_read_console(uint32_t vtermno, char *buf, int count)
 {
 	struct vmbox_console *vc = vtermno_to_vmbox_console(vtermno);
-	struct hvc_ring *ring = vc->ring;
-	uint32_t ridx, widx, size, recv = 0;
+	struct hvc_ring *ring = vc->rx;
+	uint32_t ridx, widx,  recv = 0;
 	char *buffer;
 
-	if (!vc->backend) {
-		ridx = ring->out_read;
-		widx = ring->out_write;
-		buffer = ring->out;
-		size = sizeof(ring->out);
-	} else {
-		ridx = ring->in_read;
-		widx = ring->in_write;
-		buffer = ring->in;
-		size = sizeof(ring->in);
-	}
+	ridx = ring->ridx;
+	widx = ring->widx;
+	buffer = ring->buf;
 
 	mb();
-	BUG_ON((widx - ridx) > size);
+	BUG_ON((widx - ridx) > ring->size);
 
 	/* index overflow ? */
 	while ((ridx != widx) && (recv < count))
-		buf[recv++] = buffer[VMBOX_CONSOLE_IDX(ridx++, size)];
+		buf[recv++] = buffer[VMBOX_CONSOLE_IDX(ridx++, ring->size)];
 
+	ring->ridx = ridx;
 	mb();
-	if (!vc->backend)
-		ring->out_read = ridx;
-	else
-		ring->in_read = ridx;
-
-	if (recv && vc->vdev)
-		vmbox_device_ipc_event(vc->vdev, VMBOX_HVC_EVENT_RX);
 
 	return recv;
 }
@@ -120,62 +110,46 @@ static int vmbox_hvc_read_console(uint32_t vtermno, char *buf, int count)
 static int vmbox_hvc_write_console(uint32_t vtermno, const char *buf, int count)
 {
 	struct vmbox_console *vc = vtermno_to_vmbox_console(vtermno);
-	struct hvc_ring *ring = vc->ring;
-	uint32_t ridx, widx, size, send = 0;
+	struct hvc_ring *ring = vc->tx;
+	uint32_t ridx, widx, send;
 	char *buffer;
 	int len = count;
 
-	if (vc->backend) {
-		buffer = ring->out;
-		size = sizeof(ring->out);
-	} else {
-		buffer = ring->in;
-		size = sizeof(ring->in);
-	}
-
 	while (count) {
-		if (vc->backend) {
-			ridx = ring->out_read;
-			widx = ring->out_write;
-		} else {
-			ridx = ring->in_read;
-			widx = ring->in_write;
-		}
+again:
+		ridx = ring->ridx;
+		widx = ring->widx;
+		buffer = ring->buf;
 		mb();
 
-		/* in case overflow alway happend in frontend side */
-		if (((widx - ridx) == size) && vc->backend && !vc->otherside_state) {
-			ridx += count;
-			ring->out_read = ridx;
-			wmb();
+		/*
+		 * when overflow happend, if the otherside is not opened
+		 */
+		if (((widx - ridx) == ring->size)) {
+			if (vc->otherside_state != VMBOX_DEV_STAT_OPENED) {
+				ridx += count;
+				ring->ridx = ridx;
+				wmb();
+			} else {
+				/* here wait for other side process the data */
+				vmbox_device_vring_event(vc->vdev);
+				hvc_sched_out();
+				goto again;
+			}
 		}
 
-		while ((send < count) && (widx - ridx) < size)
-			buffer[VMBOX_CONSOLE_IDX(widx++, size)] = buf[send++];
+		while ((send < count) && (widx - ridx) < ring->size)
+			buffer[VMBOX_CONSOLE_IDX(widx++, ring->size)] = buf[send++];
 
-		wmb();
-		if (vc->backend)
-			ring->out_write = widx;
-		else
-			ring->in_write = widx;
+		ring->widx = widx;
+		mb();
 
 		count -= send;
+		buf += send;
 
-		if (send && vc->vdev)
+		if (send && vc->vdev && vc->otherside_state == VMBOX_DEV_STAT_OPENED)
 			vmbox_device_vring_event(vc->vdev);
-
-		/*
-		 * buffer is full but there still some data needed to transfer
-		 * need wait the otherside finish read the data, when other side
-		 * read the data, it will send a RX message to this VM, then it
-		 * can be waked up
-		 */
-		if (count && (!vc->otherside_state)) {
-			hvc_sched_out();
-		} else if (count && vc->otherside_state && vc->vdev) {
-			vmbox_device_ipc_event(vc->vdev,
-					VMBOX_HVC_EVENT_TX_FULL);
-		}
+		send = 0;
 	}
 
 	return len;
@@ -197,7 +171,7 @@ static int vmbox_hvc_notifier_add(struct hvc_struct *hp, int irq)
 		return ret;
 
 	/* indicate the other side that I have opened */
-	vmbox_device_ipc_event(vc->vdev, VMBOX_DEV_EVENT_OPENED);
+	vmbox_device_state_change(vc->vdev, VMBOX_DEV_STAT_OPENED);
 
 	return 0;
 }
@@ -209,11 +183,9 @@ static void vmbox_hvc_notifier_del(struct hvc_struct *hp, int irq)
 	if (!vc || !vc->vdev)
 		return;
 
-	notifier_del_irq(hp, irq);
-
 	/* indicate the other side that I have closed */
-	if (vc->vdev)
-		vmbox_device_ipc_event(vc->vdev, VMBOX_DEV_EVENT_CLOSED);
+	vmbox_device_state_change(vc->vdev, VMBOX_DEV_STAT_CLOSED);
+	notifier_del_irq(hp, irq);
 }
 
 static void vmbox_hvc_notifier_hangup(struct hvc_struct *hp, int irq)
@@ -223,10 +195,9 @@ static void vmbox_hvc_notifier_hangup(struct hvc_struct *hp, int irq)
 	if (!vc || !vc->vdev)
 		return;
 
-	notifier_del_irq(hp, irq);
-
 	/* indicate the other side that I have hangup */
-	vmbox_device_ipc_event(vc->vdev, VMBOX_HVC_EVENT_HANGUP);
+	vmbox_device_state_change(vc->vdev, VMBOX_DEV_STAT_CLOSED);
+	notifier_del_irq(hp, irq);
 }
 
 static const struct hv_ops vmbox_hvc_ops = {
@@ -237,15 +208,24 @@ static const struct hv_ops vmbox_hvc_ops = {
 	.notifier_hangup = vmbox_hvc_notifier_hangup,
 };
 
+static void inline
+vmbox_hvc_ring_setup(struct vmbox_console *vc, void *base, int backend)
+{
+	int header_size = sizeof(struct hvc_ring);
+
+	if (backend) {
+		vc->tx = (struct hvc_ring *)base;
+		vc->rx = (struct hvc_ring *)(base + header_size + BUF_0_SIZE);
+	} else {
+		vc->rx = (struct hvc_ring *)base;
+		vc->tx = (struct hvc_ring *)(base + header_size + BUF_0_SIZE);
+	}
+}
+
 static int vmbox_hvc_vring_init(struct vmbox_console *vc)
 {
 	void *base;
 	struct vmbox_device *vdev = vc->vdev;
-
-	if (vc->ring) {
-		pr_info("vmbox console already init at console init\n");
-		return 0;
-	}
 
 	/*
 	 * rxbuf - at least 2048
@@ -253,11 +233,18 @@ static int vmbox_hvc_vring_init(struct vmbox_console *vc)
 	if (vdev->vring_mem_size < 8192)
 		return -ENOSPC;
 
+	if (vc->tx && vc->backend)
+		vdev->vring_va = ((void *)vc->tx) - VMBOX_IPC_ALL_ENTRY_SIZE;
+	else
+		pr_err("wrong vmbox console type\n");
+
 	base = vmbox_device_remap(vdev);
 	if (!base)
 		return -ENOMEM;
 
-	vc->ring = (struct hvc_ring *)base;
+	if (!vc->tx || !vc->rx)
+		vmbox_hvc_ring_setup(vc, base, vc->backend);
+
 	return 0;
 }
 
@@ -281,8 +268,6 @@ static int vmbox_hvc_probe(struct vmbox_device *vdev)
 	struct hvc_struct *hp;
 	struct vmbox_console *vc;
 	static int need_init = 1;
-
-	pr_info("do vmbox hvc probe\n");
 
 	if ((get_vmid() == 0) && need_init) {
 		pr_info("register a fake hvc for vm0\n");
@@ -308,6 +293,7 @@ static int vmbox_hvc_probe(struct vmbox_device *vdev)
 	vmbox_set_drvdata(vdev, vc);
 	vc->vdev = vdev;
 	vc->vetrmno = VMBOX_HVC_COOLIE + hvc_index;
+
 	spin_lock(&vmbox_console_lock);
 	vc->id = hvc_index++;
 	hvc_consoles[vc->id] = vc;
@@ -320,6 +306,7 @@ static int vmbox_hvc_probe(struct vmbox_device *vdev)
 		kfree(vc);
 		return -ENOMEM;
 	}
+	vc->otherside_state = vmbox_device_otherside_state(vdev);
 
 	hp = hvc_alloc(vc->vetrmno, vdev->vring_irq,
 			&vmbox_hvc_ops, 256);
@@ -331,17 +318,6 @@ static int vmbox_hvc_probe(struct vmbox_device *vdev)
 	vmbox_device_online(vdev);
 
 	return 0;
-}
-
-static void vmbox_hvc_flush_data(struct vmbox_console *vc, int size)
-{
-	struct hvc_ring *ring = vc->ring;
-
-	if (vc->vdev && vmbox_device_is_backend(vc->vdev))
-		ring->out_read += size;
-	else
-		ring->in_read += size;
-	mb();
 }
 
 static void vmbox_hvc_remove(struct vmbox_device *vdev)
@@ -357,26 +333,34 @@ static void vmbox_hvc_remove(struct vmbox_device *vdev)
 static int vmbox_hvc_evt_handler(struct vmbox_device *vdev,
 		uint32_t event)
 {
-	struct vmbox_console *vc = vmbox_get_drvdata(vdev);
-
 	switch (event) {
-	case VMBOX_DEV_EVENT_OPENED:
-		vc->otherside_state = VMBOX_HVC_STAT_OPENED;
-		break;
-	case VMBOX_DEV_EVENT_CLOSED:
-		vc->otherside_state = VMBOX_HVC_STAT_CLOSED;
-		break;
-	case VMBOX_HVC_EVENT_HANGUP:
-		vc->otherside_state = VMBOX_HVC_STAT_CLOSED;
-		break;
 	case VMBOX_HVC_EVENT_RX:
 		break;
 	case VMBOX_HVC_EVENT_TX_FULL:
-		vmbox_hvc_flush_data(vc, 16);
+		pr_err("vmbox console tx full\n");
+		// vmbox_hvc_flush_data(vc, 16);
 		break;
 	default:
 		break;
 	}
+
+	return 0;
+}
+
+static int vmbox_hvc_state_change(struct vmbox_device *vdev, int state)
+{
+	struct vmbox_console *vc = vmbox_get_drvdata(vdev);
+
+	switch (state) {
+	case VMBOX_DEV_STAT_OPENED:
+		break;
+	case VMBOX_DEV_STAT_CLOSED:
+		break;
+	default:
+		break;
+	}
+
+	vc->otherside_state = state;
 
 	return 0;
 }
@@ -392,6 +376,7 @@ static struct vmbox_driver vmbox_console_drv = {
 	.probe = vmbox_hvc_probe,
 	.remove = vmbox_hvc_remove,
 	.otherside_evt_handler = vmbox_hvc_evt_handler,
+	.otherside_state_change = vmbox_hvc_state_change,
 	.driver = {
 		.name = "vmbox-console",
 	},
@@ -416,7 +401,7 @@ static int __init vmbox_hvc_console_init(void)
 	struct device_node *node;
 	struct resource reg;
 	struct vmbox_console *vc;
-	struct hvc_ring *console_ring;
+	void *console_ring;
 
 	pr_info("vmbox hvc console init for backend\n");
 
@@ -446,13 +431,17 @@ static int __init vmbox_hvc_console_init(void)
 	if (!vc)
 		return -ENOMEM;
 
-	vc->backend = 1;
-	vc->ring = console_ring;
+	vmbox_hvc_ring_setup(vc, console_ring +
+			VMBOX_IPC_ALL_ENTRY_SIZE, 1);
+	vc->tx->ridx = 0;
+	vc->tx->widx = 0;
+	vc->tx->size = BUF_0_SIZE;
+	vc->rx->ridx = 0;
+	vc->rx->widx = 0;
+	vc->rx->size = BUF_1_SIZE;
+
 	vc->vetrmno = VMBOX_HVC_COOLIE + 0;
-	console_ring->out_read = 0;
-	console_ring->in_write = 0;
-	console_ring->in_read = 0;
-	console_ring->out_write = 0;
+	vc->backend = 1;
 	hvc_consoles[hvc_index] = vc;
 	wmb();
 

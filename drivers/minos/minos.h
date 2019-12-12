@@ -160,7 +160,7 @@ static inline void hvc_change_log_level(unsigned int level)
 
 static inline void hvc_sched_out(void)
 {
-
+	minos_hvc0(HVC_SCHED_OUT);
 }
 
 static inline int get_vmid(void)
