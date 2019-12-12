@@ -1222,6 +1222,10 @@ again:
 	return addr;
 }
 
+#ifdef CONFIG_MINOS
+extern int mvm_zap_pmd_range(struct vm_area_struct *vma, pmd_t *pmd);
+#endif
+
 static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 				struct vm_area_struct *vma, pud_t *pud,
 				unsigned long addr, unsigned long end,
@@ -1235,20 +1239,8 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 		next = pmd_addr_end(addr, end);
 
 #ifdef CONFIG_MINOS
-		if ((pmd_val(*pmd) && !pmd_table(*pmd)) && (vma->vm_flags & VM_PFNMAP)) {
-			/*
-			 * if the VM_PFNMAP is set, indicate that the
-			 * huge page is directly mapped to a physical
-			 * address, just clear the pmd entry
-			 * TBD
-			 */
-#ifdef CONFIG_ARM64
-			pmd->pmd = 0;
-#else
-			*pmd = 0;
-#endif
-			goto next;
-		}
+		if (!mvm_zap_pmd_range(vma, pmd))
+ 			goto next;
 #endif
 
 		if (pmd_trans_huge(*pmd)) {

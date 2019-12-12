@@ -53,8 +53,6 @@
 
 #include "minos.h"
 
-static struct platform_device *mpdev;
-
 struct vm_event {
 	struct eventfd_ctx *ctx;
 	struct vm_device *vm;
@@ -552,6 +550,28 @@ static pmd_t *mvm_pmd_alloc(struct mm_struct *mm, unsigned long addr)
 		return (pmd_t *)pmd_alloc(mm, (pud_t *)pgd, addr);
 }
 
+#if defined(CONFIG_ARM) && !defined(CONFIG_ARM_LPAE)
+#define pmd_table(pmd)		((pmd_val(pmd) & PMD_TYPE_MASK) == \
+				 PMD_TYPE_TABLE)
+#endif
+
+int mvm_zap_pmd_range(struct vm_area_struct *vma, pmd_t *pmd)
+{
+	if ((pmd_val(*pmd) && !pmd_table(*pmd)) && (vma->vm_flags & VM_PFNMAP)) {
+		/*
+		 * if the VM_PFNMAP is set, indicate that the huge page is
+		 * directly mapped to a physical address, just clear the pmd entry
+		 * TBD
+		 */
+		memset(pmd, 0, sizeof(pmd_t));
+		flush_pmd_entry(pmd);
+
+		return 0;
+	}
+
+	return 1;
+}
+
 #ifdef CONFIG_ARM64
 static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 {
@@ -884,7 +904,6 @@ static int minos_hv_probe(struct platform_device *pdev)
 
 	pr_info("Minos Hyperviosr Driver Init ...\n");
 
-	mpdev = pdev;
 	vm_class = class_create(THIS_MODULE, "mvm");
 	err = PTR_ERR(vm_class);
 	if (IS_ERR(vm_class))
