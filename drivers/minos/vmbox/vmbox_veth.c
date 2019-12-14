@@ -259,7 +259,6 @@ static int vmbox_veth_rx_cb(struct vmbox_virtqueue *vq)
 			goto out;
 
 		skb = netdev_alloc_skb(veth->ndev, buf.size);
-		pr_info("veth  get %d buf\n", buf.size);
 		if (likely(skb)) {
 			copy_data_to_skb(&buf, skb);
 			skb->protocol = eth_type_trans(skb, ndev);
