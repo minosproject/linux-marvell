@@ -237,10 +237,10 @@ static int vmbox_platform_probe(struct platform_device *pdev)
 		goto unmap_mem;
 	}
 
-	wake_up_process(vcon->hotplug_thread);
-
 	/* set the VCON online */
 	writel(1, vcon->con_iomem + VMBOX_CON_ONLINE);
+
+	wake_up_process(vcon->hotplug_thread);
 
 	return 0;
 

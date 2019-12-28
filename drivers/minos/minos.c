@@ -555,6 +555,13 @@ static pmd_t *mvm_pmd_alloc(struct mm_struct *mm, unsigned long addr)
 				 PMD_TYPE_TABLE)
 #endif
 
+#ifdef CONFIG_ARM64
+static void inline flush_pmd_entry(pmd_t *pmd)
+{
+
+}
+#endif
+
 int mvm_zap_pmd_range(struct vm_area_struct *vma, pmd_t *pmd)
 {
 	if ((pmd_val(*pmd) && !pmd_table(*pmd)) && (vma->vm_flags & VM_PFNMAP)) {

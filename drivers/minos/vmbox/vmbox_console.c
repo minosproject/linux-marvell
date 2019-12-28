@@ -111,7 +111,7 @@ static int vmbox_hvc_write_console(uint32_t vtermno, const char *buf, int count)
 {
 	struct vmbox_console *vc = vtermno_to_vmbox_console(vtermno);
 	struct hvc_ring *ring = vc->tx;
-	uint32_t ridx, widx, send;
+	uint32_t ridx, widx, send = 0;
 	char *buffer;
 	int len = count;
 
@@ -236,7 +236,7 @@ static int vmbox_hvc_vring_init(struct vmbox_console *vc)
 	if (vc->tx && vc->backend)
 		vdev->vring_va = ((void *)vc->tx) - VMBOX_IPC_ALL_ENTRY_SIZE;
 	else
-		pr_err("wrong vmbox console type\n");
+		pr_err("vmbox console front-end\n");
 
 	base = vmbox_device_remap(vdev);
 	if (!base)
@@ -290,7 +290,6 @@ static int vmbox_hvc_probe(struct vmbox_device *vdev)
 		vc->backend = vmbox_device_is_backend(vdev);
 	}
 
-	vmbox_set_drvdata(vdev, vc);
 	vc->vdev = vdev;
 	vc->vetrmno = VMBOX_HVC_COOLIE + hvc_index;
 
@@ -301,6 +300,7 @@ static int vmbox_hvc_probe(struct vmbox_device *vdev)
 
 	/* init the vmbox device and the console */
 	vmbox_device_init(vdev, VMBOX_F_NO_VIRTQ);
+	vmbox_set_drvdata(vdev, vc);
 
 	if (vmbox_hvc_vring_init(vc)) {
 		kfree(vc);
@@ -433,12 +433,6 @@ static int __init vmbox_hvc_console_init(void)
 
 	vmbox_hvc_ring_setup(vc, console_ring +
 			VMBOX_IPC_ALL_ENTRY_SIZE, 1);
-	vc->tx->ridx = 0;
-	vc->tx->widx = 0;
-	vc->tx->size = BUF_0_SIZE;
-	vc->rx->ridx = 0;
-	vc->rx->widx = 0;
-	vc->rx->size = BUF_1_SIZE;
 
 	vc->vetrmno = VMBOX_HVC_COOLIE + 0;
 	vc->backend = 1;

@@ -262,16 +262,15 @@ int vmbox_device_init(struct vmbox_device *vdev, unsigned long flags)
 		return -EBUSY;
 	}
 
-	if (!vdev->vring_va)
-		vmbox_device_remap(vdev);
-
 	vdev->flags |= flags;
-
 	if (vdev->flags & VMBOX_F_NO_VIRTQ) {
 		pr_info("vmbox device using no virtq mode %s\n",
 				dev_name(&vdev->dev));
 		return 0;
 	}
+
+	if (!vdev->vring_va)
+		vmbox_device_remap(vdev);
 
 	pr_info("%s: nr_vqs: %d\n", __func__, vdev->nr_vqs);
 
@@ -371,9 +370,6 @@ static void inline __vmbox_device_online(struct vmbox_device *vdev)
 	 */
 	vmbox_device_state(vdev) = VMBOX_DEV_STAT_ONLINE;
 	writel(1, vdev->iomem + VMBOX_DEV_VDEV_ONLINE);
-
-	if (!vmbox_device_is_backend(vdev))
-		vmbox_device_state_change(vdev, VMBOX_DEV_STAT_ONLINE);
 }
 
 int vmbox_device_online(struct vmbox_device *vdev)
