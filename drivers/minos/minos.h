@@ -143,9 +143,9 @@ static inline int hvc_virtio_mmio_init(int vmid, unsigned long gbase,
 	return (int)res.a0;
 }
 
-static inline int hvc_create_host_vdev(int vmid)
+static inline int hvc_create_vm_resource(int vmid)
 {
-	return (int)minos_hvc1(HVC_VM_CREATE_HOST_VDEV, vmid);
+	return (int)minos_hvc1(HVC_VM_CREATE_RESOURCE, vmid);
 }
 
 static inline int hvc_request_virq(int vmid, int base, int nr)

@@ -492,8 +492,8 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 			return -EIO;
 
 		return 0;
-	case IOCTL_CREATE_HOST_VDEV:
-		return hvc_create_host_vdev(vm->vmid);
+	case IOCTL_CREATE_VM_RESOURCE:
+		return hvc_create_vm_resource(vm->vmid);
 	default:
 		break;
 	}
@@ -529,11 +529,11 @@ mvm_get_unmapped_area(struct file *file, unsigned long addr,
 	/*
 	 * alloc an pud aligned vma area to map 2m pmd
 	 */
-	info.flags = 0;
+	info.flags = VM_UNMAPPED_AREA_TOPDOWN;
 	info.length = len;
 	info.low_limit = mm->mmap_base;
 	info.high_limit = TASK_SIZE;
-	info.align_mask = PAGE_MASK & ~PMD_MASK;
+	info.align_mask = ~PMD_MASK;
 	info.align_offset = 0;
 
 	return vm_unmapped_area(&info);
