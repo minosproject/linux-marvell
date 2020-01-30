@@ -680,9 +680,13 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 	pmd = pmd_offset(pud, addr);
 
 	do {
-		pmd[0] = __pmd(mmap_base | PMD_TYPE_SECT | PMD_SECT_AP_WRITE);
+		pmd[0] = __pmd(mmap_base | PMD_TYPE_SECT | PMD_SECT_S |
+				PMD_SECT_AP_WRITE | PMD_SECT_AP_READ |
+				PMD_SECT_PXN | PMD_SECT_XN | PMD_SECT_WBWA);
 		mmap_base += SZ_1M;
-		pmd[1] = __pmd(mmap_base | PMD_TYPE_SECT | PMD_SECT_AP_WRITE);
+		pmd[1] = __pmd(mmap_base | PMD_TYPE_SECT | PMD_SECT_S |
+				PMD_SECT_AP_WRITE | PMD_SECT_AP_READ |
+				PMD_SECT_PXN | PMD_SECT_XN | PMD_SECT_WBWA);
 		mmap_base += SZ_1M;
 		flush_pmd_entry(pmd);
 
