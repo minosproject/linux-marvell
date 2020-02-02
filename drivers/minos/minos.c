@@ -505,6 +505,7 @@ static unsigned long
 mvm_get_unmapped_area(struct file *file, unsigned long addr,
 		unsigned long len, unsigned long pgoff, unsigned long flags)
 {
+	unsigned long m_addr;
 	struct mm_struct *mm = current->mm;
 	struct vm_area_struct *vma;
 	struct vm_device *vm = file_to_vm(file);
@@ -531,12 +532,16 @@ mvm_get_unmapped_area(struct file *file, unsigned long addr,
 	 */
 	info.flags = VM_UNMAPPED_AREA_TOPDOWN;
 	info.length = len;
-	info.low_limit = mm->mmap_base;
+	info.low_limit = TASK_UNMAPPED_BASE;
 	info.high_limit = TASK_SIZE;
 	info.align_mask = ~PMD_MASK;
 	info.align_offset = 0;
 
-	return vm_unmapped_area(&info);
+	m_addr = vm_unmapped_area(&info);
+	if (m_addr == -ENOMEM)
+		pr_err("no memory for mmap\n");
+
+	return m_addr;
 }
 
 static pmd_t *mvm_pmd_alloc(struct mm_struct *mm, unsigned long addr)
