@@ -223,9 +223,6 @@ static int destroy_vm(int vmid)
 	struct vm_device *vm = NULL;
 	struct vm_device *tmp = NULL;
 
-	if (vmid == 0)
-		return -EINVAL;
-
 	mutex_lock(&vm_mutex);
 	list_for_each_entry(tmp, &vm_list, list) {
 		if (tmp->vmid == vmid) {
@@ -404,101 +401,143 @@ static int register_vm_event(struct vm_device *vm, int eventfd, int irq)
 	return 0;
 }
 
+static inline int ioctl_vm_mmap(struct vm_device *vm, uint64_t __user *p)
+{
+	int ret;
+	uint64_t mem_start, mem_size;
+
+	ret = get_user(mem_start, p);
+	if (ret)
+		return ret;
+
+	ret = get_user(mem_size, (p + 1));
+	if (ret)
+		return ret;
+
+	ret = hvc_vm_mmap(vm->vmid, mem_start, mem_size, &vm->vm0_mmap_base);
+	if (ret) {
+		pr_err("map vm memory to vm0 space failed\n");
+		return -ENOMEM;
+	}
+
+	return 0;
+}
+
+static int inline ioctl_register_vcpu(struct vm_device *vm, uint32_t __user *p)
+{
+	int ret;
+	uint32_t fd, virq;
+
+	ret = get_user(fd, p);
+	if (ret)
+		return ret;
+
+	ret = get_user(virq, p + 1);
+	if (ret)
+		return ret;
+
+	return register_vm_event(vm, fd, virq);
+}
+
+static inline int ioctl_create_vmcs(struct vm_device *vm, uint64_t __user *p)
+{
+	uint64_t iomem = hvc_create_vmcs(vm->vmid);
+	if (!iomem)
+		return -ENOMEM;
+
+	return put_user(iomem, p);
+}
+
+static inline int ioctl_request_virq(struct vm_device *vm, int __user *p)
+{
+	int base, size, ret;
+
+	ret = get_user(base, p);
+	if (ret)
+		return ret;
+
+	ret = get_user(size, p + 1);
+	if (ret)
+		return ret;
+
+	return hvc_request_virq(vm->vmid, base, size);
+}
+
+static int ioctl_virtio_mmio_init(struct vm_device *vm, uint64_t __user *p)
+{
+	int ret;
+	uint64_t gbase, size;
+	unsigned long hbase;
+
+	ret = get_user(gbase, p);
+	if (ret)
+		return ret;
+
+	ret = get_user(size, p + 1);
+	if (ret)
+		return ret;
+
+	ret = hvc_virtio_mmio_init(vm->vmid, gbase, size, &hbase);
+	if (ret) {
+		pr_err("hvc mmio init failed %d\n", ret);
+		return ret;
+	}
+
+	return put_user(hbase, p);
+}
+
 static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	struct vm_device *vm = file_to_vm(filp);
-	unsigned long kernel_arg[4];
-	void *iomem;
 	int ret;
+	void __user *p = (void __user *)arg;
+	struct vm_device *vm = file_to_vm(filp);
 
 	if (!vm)
 		return -ENOENT;
 
 	switch (cmd) {
 	case IOCTL_RESTART_VM:
-		return hvc_vm_reset(vm->vmid);
+		ret = hvc_vm_reset(vm->vmid);
 		break;
 	case IOCTL_POWER_DOWN_VM:
-		return hvc_vm_power_down(vm->vmid);
-		break;
-
+		ret = hvc_vm_power_down(vm->vmid);
 	case IOCTL_POWER_UP_VM:
-		hvc_vm_power_up(vm->vmid);
+		ret = hvc_vm_power_up(vm->vmid);
 		break;
-
 	case IOCTL_VM_MMAP:
-		if (copy_from_user((void *)kernel_arg, (void *)arg,
-				sizeof(unsigned long) * 2))
-			return -EINVAL;
-
-		ret = hvc_vm_mmap(vm->vmid, kernel_arg[0],
-				kernel_arg[1], &vm->vm0_mmap_base);
-		if (ret) {
-			pr_err("map vm memory to vm0 space failed\n");
-			return -ENOMEM;
-		}
-
-		if (copy_to_user((void *)arg, (void *)&vm->vm0_mmap_base,
-				sizeof(unsigned long)))
-			return -EIO;
-
-		return 0;
-
-	case IOCTL_UNREGISTER_VCPU:
-		return unregister_vm_event(vm, (int)arg);
-
-	case IOCTL_REGISTER_VCPU:
-		if (copy_from_user((void *)kernel_arg, (void *)arg,
-				sizeof(unsigned long) * 2))
-			return -EINVAL;
-
-		return register_vm_event(vm, kernel_arg[0], kernel_arg[1]);
-	case IOCTL_SEND_VIRQ:
-		hvc_send_virq(vm->vmid, (uint32_t)arg);
+		ret = ioctl_vm_mmap(vm, p);
 		break;
-
+	case IOCTL_UNREGISTER_VCPU:
+		ret = unregister_vm_event(vm, (int)arg);
+		break;
+	case IOCTL_REGISTER_VCPU:
+		ret = ioctl_register_vcpu(vm, p);
+		break;
+	case IOCTL_SEND_VIRQ:
+		ret = hvc_send_virq(vm->vmid, (uint32_t)arg);
+		break;
 	case IOCTL_CREATE_VMCS:
-		iomem = hvc_create_vmcs(vm->vmid);
-		if (!iomem)
-			return -ENOMEM;
-
-		if (copy_to_user((void *)arg, &iomem, sizeof(void *)))
-			return -EAGAIN;
-
-		return 0;
-
+		ret = ioctl_create_vmcs(vm, p);
+		break;
 	case IOCTL_CREATE_VMCS_IRQ:
 		ret = hvc_create_vmcs_irq(vm->vmid, (int)arg);
-		return ret;
+		break;
 	case IOCTL_REQUEST_VIRQ:
-		if (copy_from_user((void *)kernel_arg, (void *)arg,
-				2 * sizeof(unsigned long)))
-			return -EINVAL;
-
-		return hvc_request_virq(vm->vmid, (int)kernel_arg[0],
-				(int)kernel_arg[1]);
-
+		ret = ioctl_request_virq(vm, p);
+		break;
 	case IOCTL_VIRTIO_MMIO_INIT:
-		if (copy_from_user((void *)kernel_arg, (void *)arg,
-				sizeof(unsigned long) * 2))
-			return -EINVAL;
-
-		ret = hvc_virtio_mmio_init(vm->vmid, kernel_arg[0],
-				kernel_arg[1], &kernel_arg[2]);
-		if (ret)
-			return ret;
-
-		if (copy_to_user((void *)arg, &kernel_arg[2], sizeof(unsigned long)))
-			return -EIO;
-
-		return 0;
+		ret = ioctl_virtio_mmio_init(vm, p);
+		break;
 	case IOCTL_CREATE_VM_RESOURCE:
-		return hvc_create_vm_resource(vm->vmid);
+		ret = hvc_create_vm_resource(vm->vmid);
+		break;
 	default:
+		ret = -ENOENT;
+		pr_err("unsupported ioctl cmd\n");
 		break;
 	}
 
-	return 0;
+	return ret;
 }
 
 static unsigned long
@@ -544,6 +583,7 @@ mvm_get_unmapped_area(struct file *file, unsigned long addr,
 	return m_addr;
 }
 
+#if defined(CONFIG_ARM64) || defined(CONFIG_ARM_LPAE)
 static pmd_t *mvm_pmd_alloc(struct mm_struct *mm, unsigned long addr)
 {
 	pgd_t *pgd;
@@ -554,6 +594,7 @@ static pmd_t *mvm_pmd_alloc(struct mm_struct *mm, unsigned long addr)
 	} else
 		return (pmd_t *)pmd_alloc(mm, (pud_t *)pgd, addr);
 }
+#endif
 
 #if defined(CONFIG_ARM) && !defined(CONFIG_ARM_LPAE)
 #define pmd_table(pmd)		((pmd_val(pmd) & PMD_TYPE_MASK) == \
@@ -807,40 +848,42 @@ static int create_new_vm(struct vmtag *info)
 	return vmid;
 }
 
+static int inline ioctl_create_vm(void __user *p)
+{
+	int ret;
+	struct vmtag vmtag;
+
+	ret = copy_from_user(&vmtag, p, sizeof(struct vmtag));
+	if (ret)
+		return -EACCES;
+
+	ret = create_new_vm(&vmtag);
+	if (ret <= 0) {
+		pr_err("unable to create new guest VM\n");
+		return ret;
+	}
+
+	return copy_to_user(p, &vmtag, sizeof(struct vmtag));
+}
+
 static long vm0_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
-	int ret, vmid = -EINVAL;
-	struct vmtag *vmtag;
+	int ret;
 
 	switch (cmd) {
 	case IOCTL_CREATE_VM:
-		vmtag = kzalloc(sizeof(*vmtag), GFP_KERNEL);
-		if (!vmtag)
-			return -ENOMEM;
-
-		ret = copy_from_user(vmtag, (void *)arg, sizeof(struct vmtag));
-		if (ret)
-			goto out_create;
-
-		vmid = create_new_vm(vmtag);
-		if (vmid <= -1)
-			goto out_create;
-
-		ret = copy_to_user((void *)arg, (void *)vmtag, sizeof(*vmtag));
-		if (ret)
-			pr_err("copy vm info to user failed\n");
-out_create:
-		kfree(vmtag);
-		return vmid;
-
+		ret = ioctl_create_vm((void __user *)arg);
+		break;
 	case IOCTL_DESTROY_VM:
-		destroy_vm((int)arg);
+		ret = destroy_vm((int)arg);
 		break;
 	default:
+		ret = -ENOENT;
+		pr_err("unsupport vm0 ioctl cmd\n");
 		break;
 	}
 
-	return -EINVAL;
+	return ret;
 }
 
 #ifdef CONFIG_COMPAT
