@@ -133,35 +133,52 @@ static DEVICE_ATTR(flags, 0444, vm_flags_show, NULL);
 static DEVICE_ATTR(log_level, S_IWUSR | S_IRUGO,
 		hv_log_level_show, hv_log_level_store);
 
-static int mvm_open(struct inode *inode, struct file *file)
+static struct vm_device *vmid_to_vm(uint32_t vmid)
 {
-	int vmid = iminor(inode), err;
-	struct vm_device *tmp, *vm = NULL;
-	struct file_operations *new_fops = NULL;
+	struct vm_device *tmp;
 
 	mutex_lock(&vm_mutex);
-
 	list_for_each_entry(tmp, &vm_list, list) {
 		if (vmid == tmp->vmid) {
-			vm = tmp;
-			new_fops = fops_get(vm->fops);
-			break;
+			mutex_unlock(&vm_mutex);
+			return tmp;
 		}
 	}
+	mutex_unlock(&vm_mutex);
 
-	if ((vm == NULL) || (!new_fops)) {
+	return NULL;
+}
+
+static int mvm_open(struct inode *inode, struct file *file)
+{
+	struct vm_device *vm;
+	int vmid = iminor(inode), err = 0;
+	struct file_operations *new_fops = NULL;
+
+	vm = vmid_to_vm(vmid);
+	if (!vm) {
+		pr_err("vm-%d has not been created\n", vmid);
+		return -ENOENT;
+	}
+
+	new_fops = fops_get(vm->fops);
+	if (!new_fops) {
 		pr_err("no such vm with vmid:%d\n", vmid);
 		return -ENOENT;
 	}
 
-	file->private_data = vm;
+	mutex_lock(&vm_mutex);
 	replace_fops(file, new_fops);
-	err = 0;
+	mutex_unlock(&vm_mutex);
+
+	if (vmid != 0)
+		file->private_data = vm;
+	else
+		file->private_data = NULL;
 
 	if (file->f_op->open)
 		err = file->f_op->open(inode, file);
 
-	mutex_unlock(&vm_mutex);
 	return err;
 }
 
@@ -175,7 +192,7 @@ static void vm_dev_free(struct device *dev)
 {
 	struct vm_device *vm = container_of(dev, struct vm_device, device);
 
-	pr_info("release vm-%d\n", vm->vmid);
+	pr_info("release vm-%d memory\n", vm->vmid);
 	kfree(vm);
 }
 
@@ -202,63 +219,19 @@ static int vm_device_register(struct vm_device *vm)
 	list_add_tail(&vm->list, &vm_list);
 	mutex_unlock(&vm_mutex);
 
-	device_create_file(&vm->device, &dev_attr_vmid);
-	device_create_file(&vm->device, &dev_attr_nr_vcpu);
-	device_create_file(&vm->device, &dev_attr_mem_size);
-	device_create_file(&vm->device, &dev_attr_mem_base);
-	device_create_file(&vm->device, &dev_attr_entry);
-	device_create_file(&vm->device, &dev_attr_setup_data);
-	device_create_file(&vm->device, &dev_attr_name);
-	device_create_file(&vm->device, &dev_attr_os_type);
-	device_create_file(&vm->device, &dev_attr_flags);
-
-	if (vm->vmid == 0)
+	if (vm->vmid != 0) {
+		device_create_file(&vm->device, &dev_attr_vmid);
+		device_create_file(&vm->device, &dev_attr_nr_vcpu);
+		device_create_file(&vm->device, &dev_attr_mem_size);
+		device_create_file(&vm->device, &dev_attr_mem_base);
+		device_create_file(&vm->device, &dev_attr_entry);
+		device_create_file(&vm->device, &dev_attr_setup_data);
+		device_create_file(&vm->device, &dev_attr_name);
+		device_create_file(&vm->device, &dev_attr_os_type);
+		device_create_file(&vm->device, &dev_attr_flags);
+	} else {
 		device_create_file(&vm->device, &dev_attr_log_level);
-
-	return 0;
-}
-
-static int destroy_vm(int vmid)
-{
-	struct vm_device *vm = NULL;
-	struct vm_device *tmp = NULL;
-
-	mutex_lock(&vm_mutex);
-	list_for_each_entry(tmp, &vm_list, list) {
-		if (tmp->vmid == vmid) {
-			vm = tmp;
-			break;
-		}
 	}
-	mutex_unlock(&vm_mutex);
-
-	if (vm == NULL)
-		return -ENOENT;
-
-	if (atomic_read(&vm->opened)) {
-		pr_err("vm%d has been opened, release it first\n", vm->vmid);
-		return -EBUSY;
-	}
-
-	mutex_lock(&vm_mutex);
-	list_del(&vm->list);
-	mutex_unlock(&vm_mutex);
-
-	device_remove_file(&vm->device, &dev_attr_vmid);
-	device_remove_file(&vm->device, &dev_attr_nr_vcpu);
-	device_remove_file(&vm->device, &dev_attr_mem_size);
-	device_remove_file(&vm->device, &dev_attr_mem_base);
-	device_remove_file(&vm->device, &dev_attr_entry);
-	device_remove_file(&vm->device, &dev_attr_setup_data);
-	device_remove_file(&vm->device, &dev_attr_name);
-	device_remove_file(&vm->device, &dev_attr_os_type);
-	device_remove_file(&vm->device, &dev_attr_flags);
-
-	if (vmid == 0)
-		device_remove_file(&vm->device, &dev_attr_log_level);
-
-	device_destroy(vm_class, MKDEV(MINOS_VM_MAJOR, vm->vmid));
-	hvc_vm_destroy(vmid);
 
 	return 0;
 }
@@ -267,13 +240,36 @@ static int vm_release(struct inode *inode, struct file *filp)
 {
 	struct vm_device *vm = file_to_vm(filp);
 
-	if (!vm) {
-		pr_err("vm has not been opend\n");
-		return -ENOENT;
+	pr_info("release vm-%d\n", vm->vmid);
+
+	if ((vm == NULL) && (vm->owner != current)) {
+		pr_err("can not destroy vm not the owner\n");
+		return -EPERM;
 	}
 
+	vm->owner = NULL;
 	filp->private_data = NULL;
-	atomic_cmpxchg(&vm->opened, 1, 0);
+
+	mutex_lock(&vm_mutex);
+	list_del(&vm->list);
+	mutex_unlock(&vm_mutex);
+
+	if (vm->vmid != 0) {
+		device_remove_file(&vm->device, &dev_attr_vmid);
+		device_remove_file(&vm->device, &dev_attr_nr_vcpu);
+		device_remove_file(&vm->device, &dev_attr_mem_size);
+		device_remove_file(&vm->device, &dev_attr_mem_base);
+		device_remove_file(&vm->device, &dev_attr_entry);
+		device_remove_file(&vm->device, &dev_attr_setup_data);
+		device_remove_file(&vm->device, &dev_attr_name);
+		device_remove_file(&vm->device, &dev_attr_os_type);
+		device_remove_file(&vm->device, &dev_attr_flags);
+	} else {
+		device_remove_file(&vm->device, &dev_attr_log_level);
+	}
+
+	device_destroy(vm_class, MKDEV(MINOS_VM_MAJOR, vm->vmid));
+	hvc_vm_destroy(vm->vmid);
 
 	return 0;
 }
@@ -281,6 +277,11 @@ static int vm_release(struct inode *inode, struct file *filp)
 static int vm_open(struct inode *inode, struct file *filp)
 {
 	struct vm_device *vm = (struct vm_device *)filp->private_data;
+
+	if (vm->owner != current) {
+		pr_err("can not open this VM not the owner\n");
+		return -EPERM;
+	}
 
 	if (atomic_cmpxchg(&vm->opened, 0, 1)) {
 		pr_err("minos: vm%d has been opened\n", vm->vmid);
@@ -492,8 +493,10 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 	void __user *p = (void __user *)arg;
 	struct vm_device *vm = file_to_vm(filp);
 
-	if (!vm)
+	if (!vm || (task_tgid_vnr(current) != task_tgid_vnr(vm->owner))) {
+		pr_err("can not call ioctl not the owner 0x%x\n", cmd);
 		return -ENOENT;
+	}
 
 	switch (cmd) {
 	case IOCTL_RESTART_VM:
@@ -501,6 +504,7 @@ static long vm_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		break;
 	case IOCTL_POWER_DOWN_VM:
 		ret = hvc_vm_power_down(vm->vmid);
+		break;
 	case IOCTL_POWER_UP_VM:
 		ret = hvc_vm_power_up(vm->vmid);
 		break;
@@ -545,30 +549,22 @@ mvm_get_unmapped_area(struct file *file, unsigned long addr,
 		unsigned long len, unsigned long pgoff, unsigned long flags)
 {
 	unsigned long m_addr;
-	struct mm_struct *mm = current->mm;
-	struct vm_area_struct *vma;
 	struct vm_device *vm = file_to_vm(file);
 	struct vm_unmapped_area_info info;
 
-	if (len & (vm->guest_page_size - 1))
-		return -EINVAL;
 	if (len > TASK_SIZE)
 		return -ENOMEM;
 
 	if (flags & MAP_FIXED)
 		return -EINVAL;
 
-	if (addr) {
-		addr = ALIGN(addr, vm->guest_page_size);
-		vma = find_vma(mm, addr);
-		if (TASK_SIZE - len >= addr &&
-			(!vma || addr + len <= vma->vm_start))
-			return addr;
-	}
-
 	/*
-	 * alloc an pud aligned vma area to map 2m pmd
+	 * alloc an PMD aligned vma area to map VM normal
+	 * memory
 	 */
+	if (len & (vm->guest_page_size - 1))
+		return -EINVAL;
+
 	info.flags = VM_UNMAPPED_AREA_TOPDOWN;
 	info.length = len;
 	info.low_limit = TASK_UNMAPPED_BASE;
@@ -597,15 +593,12 @@ static pmd_t *mvm_pmd_alloc(struct mm_struct *mm, unsigned long addr)
 #endif
 
 #if defined(CONFIG_ARM) && !defined(CONFIG_ARM_LPAE)
-#define pmd_table(pmd)		((pmd_val(pmd) & PMD_TYPE_MASK) == \
-				 PMD_TYPE_TABLE)
+#define pmd_table(pmd) \
+	((pmd_val(pmd) & PMD_TYPE_MASK) == PMD_TYPE_TABLE)
 #endif
 
 #ifdef CONFIG_ARM64
-static void inline flush_pmd_entry(pmd_t *pmd)
-{
-
-}
+static void inline flush_pmd_entry(pmd_t *pmd) {}
 #endif
 
 int mvm_zap_pmd_range(struct vm_area_struct *vma, pmd_t *pmd)
@@ -641,7 +634,10 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 	 * now minos only support 1M Section for aarch32 so using
 	 * pmd mapping, the va_start must PUD size align
 	 */
-	if ((!vm) || (!info->mem_size))
+	if ((!vm) || (vm->owner != current))
+		return -EPERM;
+
+	if (!info->mem_size)
 		return -ENOENT;
 
 	if (vma->vm_start & (vm->guest_page_size - 1))
@@ -698,7 +694,10 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 	unsigned long addr = vma->vm_start, end = vma->vm_end;
 	unsigned long vma_size = vma->vm_end - vma->vm_start;
 
-	if ((!vm) || (!info->mem_size))
+	if ((!vm) || (vm->owner != current))
+		return -EPERM;
+
+	if (!info->mem_size)
 		return -ENOENT;
 
 	if (vma->vm_start & (vm->guest_page_size -1))
@@ -760,7 +759,10 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 	 * now minos only support 1M Section for aarch32 so using
 	 * pmd mapping, the va_start must PUD size align
 	 */
-	if ((!vm) || (!info->mem_size))
+	if ((!vm) || (vm->owner != current))
+		return -EPERM;
+
+	if (!info->mem_size)
 		return -ENOENT;
 
 	if (vma->vm_start & (vm->guest_page_size - 1))
@@ -811,10 +813,20 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 }
 #endif
 
+#ifdef CONFIG_COMPAT
+static long vm0_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+{
+	return vm_ioctl(filp, cmd, (unsigned long)compat_ptr(arg));
+}
+#endif
+
 struct file_operations vm_fops = {
 	.open			= vm_open,
 	.release		= vm_release,
 	.unlocked_ioctl 	= vm_ioctl,
+#ifdef CONFIG_COMPAT
+	.compat_ioctl		= vm_compat_ioctl,
+#endif
 	.mmap			= mvm_vm_mmap,
 	.get_unmapped_area	= mvm_get_unmapped_area,
 	.owner			= THIS_MODULE,
@@ -848,22 +860,26 @@ static int create_new_vm(struct vmtag *info)
 	return vmid;
 }
 
-static int inline ioctl_create_vm(void __user *p)
+static int ioctl_create_vm(struct file *filp, void __user *p)
 {
-	int ret;
+	int vmid;
 	struct vmtag vmtag;
 
-	ret = copy_from_user(&vmtag, p, sizeof(struct vmtag));
-	if (ret)
+	vmid = copy_from_user(&vmtag, p, sizeof(struct vmtag));
+	if (vmid)
 		return -EACCES;
 
-	ret = create_new_vm(&vmtag);
-	if (ret <= 0) {
+	vmid = create_new_vm(&vmtag);
+	if (vmid <= 0) {
 		pr_err("unable to create new guest VM\n");
-		return ret;
+		return vmid;
 	}
 
-	return copy_to_user(p, &vmtag, sizeof(struct vmtag));
+	filp->private_data = vmid_to_vm(vmid);
+	if (copy_to_user(p, &vmtag, sizeof(struct vmtag)))
+			pr_err("copy vm info to user failed\n");
+
+	return vmid;
 }
 
 static long vm0_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
@@ -872,10 +888,7 @@ static long vm0_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 
 	switch (cmd) {
 	case IOCTL_CREATE_VM:
-		ret = ioctl_create_vm((void __user *)arg);
-		break;
-	case IOCTL_DESTROY_VM:
-		ret = destroy_vm((int)arg);
+		ret = ioctl_create_vm(filp, (void __user *)arg);
 		break;
 	default:
 		ret = -ENOENT;
@@ -895,8 +908,14 @@ static long vm0_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long 
 
 static int vm0_mmap(struct file *file, struct vm_area_struct *vma)
 {
+	struct vm_device *vm = file_to_vm(file);
 	size_t size = vma->vm_end - vma->vm_start;
 	unsigned long phy = vma->vm_pgoff << PAGE_SHIFT;
+
+	if (!vm || (vm->owner != current)) {
+		pr_err("VM is not opend by his owner\n");
+		return -EPERM;
+	}
 
 	vma->vm_pgoff = 0;
 	vma->vm_page_prot = pgprot_noncached(vma->vm_page_prot);
@@ -930,9 +949,14 @@ static int create_vm_device(int vmid, struct vmtag *vmtag)
 	if (!vm)
 		return -ENOMEM;
 
-	/* fix the guest_page_size to PMD_SIZE(2M on arm64) now */
+	/*
+	 * this VM belongs to this task, other process
+	 * can not open this task
+	 */
+	vm->owner = current;
 	vm->vmid = vmid;
 	vm->guest_page_size = PMD_SIZE;
+
 	if (vmtag)
 		memcpy(&vm->vmtag, vmtag, sizeof(struct vmtag));
 

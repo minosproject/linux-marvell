@@ -40,6 +40,7 @@ struct vm_device {
 	struct device *parent;
 	struct device device;
 	struct file_operations *fops;
+	struct task_struct *owner;
 };
 
 #define MVM_EVENT_ID_BASE	(32)
