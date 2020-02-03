@@ -619,39 +619,17 @@ int mvm_zap_pmd_range(struct vm_area_struct *vma, pmd_t *pmd)
 }
 
 #ifdef CONFIG_ARM64
-static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
+static int mvm_vm_mmap_common(struct vm_area_struct *vma, unsigned long phy, size_t size)
 {
 	pmd_t *ptep;
 	int i, count;
 	pmd_t pmd;
 	unsigned long offset, mmap_base, addr;
 	struct mm_struct *mm = vma->vm_mm;
-	struct vm_device *vm = file_to_vm(file);
-	struct vmtag *info = &vm->vmtag;
-	unsigned long vma_size = vma->vm_end - vma->vm_start;
+	unsigned long vma_size;
 
-	/*
-	 * now minos only support 1M Section for aarch32 so using
-	 * pmd mapping, the va_start must PUD size align
-	 */
-	if ((!vm) || (vm->owner != current))
-		return -EPERM;
-
-	if (!info->mem_size)
-		return -ENOENT;
-
-	if (vma->vm_start & (vm->guest_page_size - 1))
-		return -EINVAL;
-
-	if (vma_size & (vm->guest_page_size - 1))
-		return -EINVAL;
-
-	pr_info("vm-%d map 0x%lx -> 0x%lx size:0x%lx\n",
-			vm->vmid, vma->vm_start,
-			vm->vm0_mmap_base, vma_size);
-
-	vma_size = vma_size >> PMD_SHIFT;
-	mmap_base = vm->vm0_mmap_base;
+	mmap_base = phy;
+	vma_size = size >> PMD_SHIFT;
 	vma->vm_flags |= VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
 	vma->vm_flags &= ~(VM_MAYWRITE);
 	addr = vma->vm_start;
@@ -682,33 +660,15 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 	return 0;
 }
 #elif !defined(CONFIG_ARM64) && !defined(CONFIG_ARM_LPAE)
-static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
+static int mvm_vm_mmap_common(struct vm_area_struct *vma, unsigned long phy, size_t size)
 {
 	pgd_t *pgd;
 	pud_t *pud;
 	pmd_t *pmd;
 	unsigned long mmap_base;
 	struct mm_struct *mm = vma->vm_mm;
-	struct vm_device *vm = file_to_vm(file);
-	struct vmtag *info = &vm->vmtag;
 	unsigned long addr = vma->vm_start, end = vma->vm_end;
-	unsigned long vma_size = vma->vm_end - vma->vm_start;
 
-	if ((!vm) || (vm->owner != current))
-		return -EPERM;
-
-	if (!info->mem_size)
-		return -ENOENT;
-
-	if (vma->vm_start & (vm->guest_page_size -1))
-		return -EINVAL;
-
-	if (vma_size & (vm->guest_page_size - 1))
-		return -EINVAL;
-
-	pr_info("vm-%d map 0x%lx -> 0x%lx size:0x%lx\n",
-			vm->vmid, vma->vm_start,
-			vm->vm0_mmap_base, vma_size);
 	/*
 	 * for arm32 if LPAE is not enabled kernel will 2 levels
 	 * page table, if mapped as section each entry will map
@@ -718,7 +678,7 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 	vma->vm_flags |= 0x80000000 |
 		VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
 	vma->vm_flags &= ~VM_MAYWRITE;
-	mmap_base = vm->vm0_mmap_base;
+	mmap_base = phy;
 
 	pgd = pgd_offset(mm, addr);
 	pud = pud_offset(pgd, addr);
@@ -744,39 +704,17 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 	return 0;
 }
 #else
-static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
+static int mvm_vm_mmap_common(struct vm_area_struct *vma, unsigned long phy, size_t size)
 {
 	pte_t *ptep;
-	int i, count;
 	pmd_t pmd;
+	int i, count;
 	unsigned long offset, mmap_base, addr;
 	struct mm_struct *mm = vma->vm_mm;
-	struct vm_device *vm = file_to_vm(file);
-	struct vmtag *info = &vm->vmtag;
-	unsigned long vma_size = vma->vm_end - vma->vm_start;
+	unsigned long vma_size;
 
-	/*
-	 * now minos only support 1M Section for aarch32 so using
-	 * pmd mapping, the va_start must PUD size align
-	 */
-	if ((!vm) || (vm->owner != current))
-		return -EPERM;
-
-	if (!info->mem_size)
-		return -ENOENT;
-
-	if (vma->vm_start & (vm->guest_page_size - 1))
-		return -EINVAL;
-
-	if (vma_size & (vm->guest_page_size - 1))
-		return -EINVAL;
-
-	pr_info("vm-%d map 0x%lx -> 0x%lx size:0x%lx\n",
-			vm->vmid, vma->vm_start,
-			vm->vm0_mmap_base, vma_size);
-
-	vma_size = vma_size >> PMD_SHIFT;
-	mmap_base = vm->vm0_mmap_base;
+	vma_size = size >> PMD_SHIFT;
+	mmap_base = phy;
 	vma->vm_flags |= VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
 	vma->vm_flags &= ~(VM_MAYWRITE);
 	addr = vma->vm_start;
@@ -813,8 +751,46 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 }
 #endif
 
+static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
+{
+	unsigned long start, end, phy;
+	struct vm_device *vm = file_to_vm(file);
+	struct vmtag *info = &vm->vmtag;
+	unsigned long vma_size = vma->vm_end - vma->vm_start;
+
+	/*
+	 * now minos only support 1M Section for aarch32 so using
+	 * pmd mapping, the va_start must PUD size align
+	 */
+	if ((!vm) || (vm->owner != current))
+		return -EPERM;
+
+	if (vma->vm_start & (vm->guest_page_size - 1))
+		return -EINVAL;
+
+	if (vma_size & (vm->guest_page_size - 1))
+		return -EINVAL;
+
+	start = vma->vm_pgoff << PAGE_SHIFT;
+	end = start + vma_size;
+	if ((start < info->mem_base) ||
+		(end > (info->mem_base + info->mem_size))) {
+		pr_err("invalid mapping range 0x%lx--->0x%lx\n",
+				start, end);
+		return -EINVAL;
+	}
+
+	phy = vm->vm0_mmap_base + (start - info->mem_base);
+	vma->vm_pgoff = 0;
+
+	pr_info("vm-%d map 0x%lx -> 0x%lx size:0x%lx\n",
+			vm->vmid, vma->vm_start, phy, vma_size);
+
+	return mvm_vm_mmap_common(vma, phy, vma_size);
+}
+
 #ifdef CONFIG_COMPAT
-static long vm0_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
+static long vm_compat_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	return vm_ioctl(filp, cmd, (unsigned long)compat_ptr(arg));
 }
