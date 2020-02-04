@@ -601,8 +601,6 @@ static pmd_t *mvm_pmd_alloc(struct mm_struct *mm, unsigned long addr)
 static void inline flush_pmd_entry(pmd_t *pmd) {}
 #endif
 
-static unsigned long vma_start;
-
 int mvm_copy_pmd_range(struct mm_struct *dst_mm, struct mm_struct *src_mm,
 		  pmd_t *dst_pmd, pmd_t *src_pmd, unsigned long addr,
 		  struct vm_area_struct *vma)
@@ -776,7 +774,7 @@ static int mvm_vm_mmap_common(struct vm_area_struct *vma, unsigned long phy, siz
 
 static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 {
-	unsigned long start, end, phy;
+	unsigned long start, end;
 	struct vm_device *vm = file_to_vm(file);
 	struct vmtag *info = &vm->vmtag;
 	unsigned long vma_size = vma->vm_end - vma->vm_start;
@@ -796,6 +794,7 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 
 	start = vma->vm_pgoff << PAGE_SHIFT;
 	end = start + vma_size;
+	vma->vm_pgoff = 0;
 	if ((start < info->mem_base) ||
 		(end > (info->mem_base + info->mem_size))) {
 		pr_err("invalid mapping range 0x%lx--->0x%lx\n",
@@ -803,13 +802,11 @@ static int mvm_vm_mmap(struct file *file, struct vm_area_struct *vma)
 		return -EINVAL;
 	}
 
-	phy = vm->vm0_mmap_base + (start - info->mem_base);
-	vma->vm_pgoff = 0;
-
 	pr_info("vm-%d map 0x%lx -> 0x%lx size:0x%lx\n",
-			vm->vmid, vma->vm_start, phy, vma_size);
+			vm->vmid, vma->vm_start,
+			vm->vm0_mmap_base, vma_size);
 
-	return mvm_vm_mmap_common(vma, phy, vma_size);
+	return mvm_vm_mmap_common(vma, vm->vm0_mmap_base, vma_size);
 }
 
 #ifdef CONFIG_COMPAT
