@@ -1001,6 +1001,13 @@ static inline int copy_pmd_range(struct mm_struct *dst_mm, struct mm_struct *src
 	src_pmd = pmd_offset(src_pud, addr);
 	do {
 		next = pmd_addr_end(addr, end);
+
+#ifdef CONFIG_MINOS
+		if (!mvm_copy_pmd_range(dst_mm, src_mm,
+					dst_pmd, src_pmd, addr, vma))
+			continue;
+#endif
+
 		if (pmd_trans_huge(*src_pmd)) {
 			int err;
 			VM_BUG_ON(next-addr != HPAGE_PMD_SIZE);
@@ -1222,10 +1229,6 @@ again:
 	return addr;
 }
 
-#ifdef CONFIG_MINOS
-extern int mvm_zap_pmd_range(struct vm_area_struct *vma, pmd_t *pmd);
-#endif
-
 static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 				struct vm_area_struct *vma, pud_t *pud,
 				unsigned long addr, unsigned long end,
@@ -1239,7 +1242,7 @@ static inline unsigned long zap_pmd_range(struct mmu_gather *tlb,
 		next = pmd_addr_end(addr, end);
 
 #ifdef CONFIG_MINOS
-		if (!mvm_zap_pmd_range(vma, pmd))
+		if (!mvm_zap_pmd_range(tlb, vma, pmd, addr))
  			goto next;
 #endif
 

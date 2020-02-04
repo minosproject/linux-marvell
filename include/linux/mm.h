@@ -2322,5 +2322,14 @@ void __init setup_nr_node_ids(void);
 static inline void setup_nr_node_ids(void) {}
 #endif
 
+#ifdef CONFIG_MINOS
+int mvm_zap_pmd_range(struct mmu_gather *tlb,
+		struct vm_area_struct *vma, pmd_t *pmd,
+		unsigned long addr);
+int mvm_copy_pmd_range(struct mm_struct *dst_mm, struct mm_struct *src_mm,
+		  pmd_t *dst_pmd, pmd_t *src_pmd, unsigned long addr,
+		  struct vm_area_struct *vma);
+#endif
+
 #endif /* __KERNEL__ */
 #endif /* _LINUX_MM_H */

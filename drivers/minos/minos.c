@@ -601,15 +601,35 @@ static pmd_t *mvm_pmd_alloc(struct mm_struct *mm, unsigned long addr)
 static void inline flush_pmd_entry(pmd_t *pmd) {}
 #endif
 
-int mvm_zap_pmd_range(struct vm_area_struct *vma, pmd_t *pmd)
+static unsigned long vma_start;
+
+int mvm_copy_pmd_range(struct mm_struct *dst_mm, struct mm_struct *src_mm,
+		  pmd_t *dst_pmd, pmd_t *src_pmd, unsigned long addr,
+		  struct vm_area_struct *vma)
 {
-	if ((pmd_val(*pmd) && !pmd_table(*pmd)) && (vma->vm_flags & VM_PFNMAP)) {
-		/*
-		 * if the VM_PFNMAP is set, indicate that the huge page is
-		 * directly mapped to a physical address, just clear the pmd entry
-		 * TBD
-		 */
-		memset(pmd, 0, sizeof(pmd_t));
+	if (vma->vm_flags & VM_PFNMAP) {
+		if (!(pmd_val(*src_pmd) && !pmd_table(*src_pmd)))
+			return 1;
+		else
+			return 0;
+	}
+
+	return 1;
+}
+
+int mvm_zap_pmd_range(struct mmu_gather *tlb,
+		struct vm_area_struct *vma, pmd_t *pmd,
+		unsigned long addr)
+{
+	if (vma->vm_flags & VM_PFNMAP) {
+		if (!(pmd_val(*pmd) && !pmd_table(*pmd)))
+			return 1;
+
+		pmd[0] = 0;
+#if defined(CONFIG_ARM) && !defined(CONFIG_ARM_LPAE)
+		pmd[1] = 0;
+#endif
+		tlb_remove_pmd_tlb_entry(tlb, pmd, addr);
 		flush_pmd_entry(pmd);
 
 		return 0;
@@ -675,10 +695,13 @@ static int mvm_vm_mmap_common(struct vm_area_struct *vma, unsigned long phy, siz
 	 * 1M memory section. currently non LAPE has not been tested
 	 * there may some issue TBF
 	 */
-	vma->vm_flags |= 0x80000000 |
-		VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
+	vma->vm_flags |= VM_PFNMAP | VM_DONTEXPAND | VM_DONTDUMP;
+	pr_info("vma flags is 0x%lx\n", vma->vm_flags);
 	vma->vm_flags &= ~VM_MAYWRITE;
+	vma->vm_flags &= ~VM_MERGEABLE;
 	mmap_base = phy;
+
+	vma_start = vma->vm_start;
 
 	pgd = pgd_offset(mm, addr);
 	pud = pud_offset(pgd, addr);
@@ -703,7 +726,7 @@ static int mvm_vm_mmap_common(struct vm_area_struct *vma, unsigned long phy, siz
 
 	return 0;
 }
-#else
+#else /* CONFIG_ARM_LPAE */
 static int mvm_vm_mmap_common(struct vm_area_struct *vma, unsigned long phy, size_t size)
 {
 	pte_t *ptep;
