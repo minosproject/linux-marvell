@@ -238,6 +238,7 @@ static int vm_device_register(struct vm_device *vm)
 
 static int vm_release(struct inode *inode, struct file *filp)
 {
+	int vmid;
 	struct vm_device *vm = file_to_vm(filp);
 
 	pr_info("release vm-%d\n", vm->vmid);
@@ -247,6 +248,7 @@ static int vm_release(struct inode *inode, struct file *filp)
 		return -EPERM;
 	}
 
+	vmid = vm->vmid;
 	vm->owner = NULL;
 	filp->private_data = NULL;
 
@@ -254,7 +256,7 @@ static int vm_release(struct inode *inode, struct file *filp)
 	list_del(&vm->list);
 	mutex_unlock(&vm_mutex);
 
-	if (vm->vmid != 0) {
+	if (vmid != 0) {
 		device_remove_file(&vm->device, &dev_attr_vmid);
 		device_remove_file(&vm->device, &dev_attr_nr_vcpu);
 		device_remove_file(&vm->device, &dev_attr_mem_size);
@@ -268,8 +270,8 @@ static int vm_release(struct inode *inode, struct file *filp)
 		device_remove_file(&vm->device, &dev_attr_log_level);
 	}
 
-	device_destroy(vm_class, MKDEV(MINOS_VM_MAJOR, vm->vmid));
-	hvc_vm_destroy(vm->vmid);
+	device_destroy(vm_class, MKDEV(MINOS_VM_MAJOR, vmid));
+	hvc_vm_destroy(vmid);
 
 	return 0;
 }
@@ -698,8 +700,6 @@ static int mvm_vm_mmap_common(struct vm_area_struct *vma, unsigned long phy, siz
 	vma->vm_flags &= ~VM_MAYWRITE;
 	vma->vm_flags &= ~VM_MERGEABLE;
 	mmap_base = phy;
-
-	vma_start = vma->vm_start;
 
 	pgd = pgd_offset(mm, addr);
 	pud = pud_offset(pgd, addr);
