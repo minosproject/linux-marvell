@@ -43,6 +43,15 @@ struct vm_device {
 	struct task_struct *owner;
 };
 
+struct vm_ring {
+	volatile uint32_t ridx;
+	volatile uint32_t widx;
+	uint32_t size;
+	char buf[0];
+};
+
+#define VM_RING_IDX(idx, size)	(idx & (size - 1))
+
 #define MVM_EVENT_ID_BASE	(32)
 #define MVM_MAX_EVENT		(512)
 #define MVM_EVENT_ID_END	(MVM_EVENT_ID_BASE + MVM_MAX_EVENT)

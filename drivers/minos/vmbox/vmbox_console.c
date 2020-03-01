@@ -49,27 +49,22 @@ static int hvc_index;
 
 #define BUF_0_SIZE	4096
 #define BUF_1_SIZE	2048
+#define BUF_SIZE	8192
 
-/*
- * at least 8K size for the transfer buffer, and
- * in or out buffer size need 2^ align
- */
-struct hvc_ring {
-	volatile uint32_t ridx;
-	volatile uint32_t widx;
-	uint32_t size;
-	char buf[0];
-};
+#define HVC_VMBOX_CONSOLE	0
+#define HVC_DEBUG_CONSOLE	1
 
 struct vmbox_console {
 	int id;
+	int type;
+	uint32_t irq;
 	struct vmbox_device *vdev;
 	struct hvc_struct *hvc;
 	int vetrmno;
 	int backend;
 	int otherside_state;
-	struct hvc_ring *tx;
-	struct hvc_ring *rx;
+	struct vm_ring *tx;
+	struct vm_ring *rx;
 };
 
 static inline struct
@@ -81,12 +76,10 @@ vmbox_console *vtermno_to_vmbox_console(uint32_t vtermno)
 	return hvc_consoles[vtermno & 0xff];
 }
 
-#define VMBOX_CONSOLE_IDX(idx, size)	(idx & (size - 1))
-
 static int vmbox_hvc_read_console(uint32_t vtermno, char *buf, int count)
 {
 	struct vmbox_console *vc = vtermno_to_vmbox_console(vtermno);
-	struct hvc_ring *ring = vc->rx;
+	struct vm_ring *ring = vc->rx;
 	uint32_t ridx, widx,  recv = 0;
 	char *buffer;
 
@@ -99,7 +92,7 @@ static int vmbox_hvc_read_console(uint32_t vtermno, char *buf, int count)
 
 	/* index overflow ? */
 	while ((ridx != widx) && (recv < count))
-		buf[recv++] = buffer[VMBOX_CONSOLE_IDX(ridx++, ring->size)];
+		buf[recv++] = buffer[VM_RING_IDX(ridx++, ring->size)];
 
 	ring->ridx = ridx;
 	mb();
@@ -110,7 +103,7 @@ static int vmbox_hvc_read_console(uint32_t vtermno, char *buf, int count)
 static int vmbox_hvc_write_console(uint32_t vtermno, const char *buf, int count)
 {
 	struct vmbox_console *vc = vtermno_to_vmbox_console(vtermno);
-	struct hvc_ring *ring = vc->tx;
+	struct vm_ring *ring = vc->tx;
 	uint32_t ridx, widx, send = 0;
 	char *buffer;
 	int len = count;
@@ -139,7 +132,7 @@ again:
 		}
 
 		while ((send < count) && (widx - ridx) < ring->size)
-			buffer[VMBOX_CONSOLE_IDX(widx++, ring->size)] = buf[send++];
+			buffer[VM_RING_IDX(widx++, ring->size)] = buf[send++];
 
 		ring->widx = widx;
 		mb();
@@ -209,16 +202,16 @@ static const struct hv_ops vmbox_hvc_ops = {
 };
 
 static void inline
-vmbox_hvc_ring_setup(struct vmbox_console *vc, void *base, int backend)
+vmbox_vm_ring_setup(struct vmbox_console *vc, void *base, int backend)
 {
-	int header_size = sizeof(struct hvc_ring);
+	int header_size = sizeof(struct vm_ring);
 
 	if (backend) {
-		vc->tx = (struct hvc_ring *)base;
-		vc->rx = (struct hvc_ring *)(base + header_size + BUF_0_SIZE);
+		vc->tx = (struct vm_ring *)base;
+		vc->rx = (struct vm_ring *)(base + header_size + BUF_0_SIZE);
 	} else {
-		vc->rx = (struct hvc_ring *)base;
-		vc->tx = (struct hvc_ring *)(base + header_size + BUF_0_SIZE);
+		vc->rx = (struct vm_ring *)base;
+		vc->tx = (struct vm_ring *)(base + header_size + BUF_0_SIZE);
 	}
 }
 
@@ -243,35 +236,119 @@ static int vmbox_hvc_vring_init(struct vmbox_console *vc)
 		return -ENOMEM;
 
 	if (!vc->tx || !vc->rx)
-		vmbox_hvc_ring_setup(vc, base, vc->backend);
+		vmbox_vm_ring_setup(vc, base, vc->backend);
 
 	return 0;
 }
 
 static int vm0_read_console(uint32_t vtermno, char *buf, int count)
 {
-	return 0;
+       return 0;
 }
 
 static int vm0_write_console(uint32_t vtermno, const char *buf, int count)
 {
-	return count;
+       return count;
 }
 
 static const struct hv_ops vm0_hvc_ops = {
-	.get_chars = vm0_read_console,
-	.put_chars = vm0_write_console,
+       .get_chars = vm0_read_console,
+       .put_chars = vm0_write_console,
+};
+
+static int vm_debug_hvc_notifier_add(struct hvc_struct *hp, int irq)
+{
+	notifier_add_irq(hp, irq);
+	minos_hvc0(HVC_DC_OPEN);
+
+	return 0;
+}
+
+static void vm_debug_hvc_notifier_del(struct hvc_struct *hp, int irq)
+{
+	notifier_del_irq(hp, irq);
+	minos_hvc0(HVC_DC_CLOSE);
+}
+
+static void vm_debug_hvc_notifier_hangup(struct hvc_struct *hp, int irq)
+{
+	notifier_del_irq(hp, irq);
+	minos_hvc0(HVC_DC_CLOSE);
+}
+
+static int vm_debug_read_console(uint32_t vtermno, char *buf, int count)
+{
+	struct vmbox_console *vc = hvc_consoles[0];
+	struct vm_ring *ring = vc->rx;
+	uint32_t ridx, widx,  recv = 0;
+	char *buffer;
+
+	if (!vc || vc->type != HVC_DEBUG_CONSOLE)
+		return 0;
+
+	ridx = ring->ridx;
+	widx = ring->widx;
+	buffer = ring->buf;
+
+	mb();
+	BUG_ON((widx - ridx) > ring->size);
+
+	/* index overflow ? */
+	while ((ridx != widx) && (recv < count))
+		buf[recv++] = buffer[VM_RING_IDX(ridx++, ring->size)];
+
+	ring->ridx = ridx;
+	mb();
+
+	return recv;
+}
+
+static int vm_debug_write_console(uint32_t vtermno, const char *buf, int count)
+{
+	int send = 0;
+	struct vm_ring *tx;
+	uint32_t widx;
+	struct vmbox_console *vc = hvc_consoles[0];
+
+	if (!vc || vc->type != HVC_DEBUG_CONSOLE)
+		return count;
+
+	tx = vc->tx;
+	widx = tx->widx;
+	mb();
+
+	BUG_ON((widx - tx->ridx) >= tx->size);
+
+	while(send < count)
+		vc->tx->buf[VM_RING_IDX(widx++, tx->size)] = buf[send++];
+
+	tx->widx = widx;
+	mb();
+
+	minos_hvc0(HVC_DC_WRITE);
+
+	return count;
+}
+
+static const struct hv_ops vm_debug_hvc_ops = {
+	.get_chars = vm_debug_read_console,
+	.put_chars = vm_debug_write_console,
+	.notifier_add = vm_debug_hvc_notifier_add,
+	.notifier_del = vm_debug_hvc_notifier_del,
+	.notifier_hangup = vm_debug_hvc_notifier_hangup,
 };
 
 static int vmbox_hvc_probe(struct vmbox_device *vdev)
 {
 	struct hvc_struct *hp;
 	struct vmbox_console *vc;
-	static int need_init = 1;
 
-	if ((get_vmid() == 0) && need_init) {
+	/*
+	 * if the vm is 0 and there is no debug console
+	 * then register a fake hvc console
+	 */
+	if ((get_vmid() == 0) && hvc_index == 0) {
 		pr_info("register a fake hvc for vm0\n");
-		need_init = 0;
 		hvc_alloc(VMBOX_HVC_COOLIE + 0xff, 0, &vm0_hvc_ops, 16);
 		hvc_index++;
 	}
@@ -288,15 +365,19 @@ static int vmbox_hvc_probe(struct vmbox_device *vdev)
 		if (!vc)
 			return -ENOMEM;
 		vc->backend = vmbox_device_is_backend(vdev);
+
+		spin_lock(&vmbox_console_lock);
+		vc->id = hvc_index++;
+		hvc_consoles[vc->id] = vc;
+		spin_unlock(&vmbox_console_lock);
+
+		vc->vetrmno = VMBOX_HVC_COOLIE + vc->id;
 	}
 
-	vc->vdev = vdev;
-	vc->vetrmno = VMBOX_HVC_COOLIE + hvc_index;
+	if (vc->type == HVC_DEBUG_CONSOLE)
+		panic("debug console should not register here\n");
 
-	spin_lock(&vmbox_console_lock);
-	vc->id = hvc_index++;
-	hvc_consoles[vc->id] = vc;
-	spin_unlock(&vmbox_console_lock);
+	vc->vdev = vdev;
 
 	/* init the vmbox device and the console */
 	vmbox_device_init(vdev, VMBOX_F_NO_VIRTQ);
@@ -306,10 +387,11 @@ static int vmbox_hvc_probe(struct vmbox_device *vdev)
 		kfree(vc);
 		return -ENOMEM;
 	}
-	vc->otherside_state = vmbox_device_otherside_state(vdev);
 
-	hp = hvc_alloc(vc->vetrmno, vdev->vring_irq,
-			&vmbox_hvc_ops, 256);
+	vc->otherside_state = vmbox_device_otherside_state(vdev);
+	vc->irq = vdev->vring_irq;
+
+	hp = hvc_alloc(vc->vetrmno, vc->irq, &vmbox_hvc_ops, 256);
 	if (IS_ERR(hp)) {
 		kfree(vc);
 		return PTR_ERR(hp);
@@ -384,6 +466,19 @@ static struct vmbox_driver vmbox_console_drv = {
 
 static int __init vmbox_console_init(void)
 {
+	struct hvc_struct *hp;
+	struct vmbox_console *vc;
+
+	vc = hvc_consoles[0];
+	if (vc && (vc->type == HVC_DEBUG_CONSOLE)) {
+		vc->irq = get_dynamic_virq(vc->irq);
+
+		hp = hvc_alloc(vc->vetrmno,
+			vc->irq, &vm_debug_hvc_ops, 256);
+		if (IS_ERR(hp))
+			pr_err("register vm debug console failed\n");
+	}
+
 	return vmbox_register_driver(&vmbox_console_drv);
 }
 
@@ -396,7 +491,7 @@ module_init(vmbox_console_init);
 module_exit(vmbox_console_exit);
 MODULE_LICENSE("GPL");
 
-static int __init vmbox_hvc_console_init(void)
+static int __init vm_init_vmbox_console(void)
 {
 	struct device_node *node;
 	struct resource reg;
@@ -431,17 +526,124 @@ static int __init vmbox_hvc_console_init(void)
 	if (!vc)
 		return -ENOMEM;
 
-	vmbox_hvc_ring_setup(vc, console_ring +
+	vmbox_vm_ring_setup(vc, console_ring +
 			VMBOX_IPC_ALL_ENTRY_SIZE, 1);
 
-	vc->vetrmno = VMBOX_HVC_COOLIE + 0;
+	vc->vetrmno = VMBOX_HVC_COOLIE + hvc_index;
 	vc->backend = 1;
+	vc->id = hvc_index;
 	hvc_consoles[hvc_index] = vc;
 	wmb();
 
-	hvc_instantiate(VMBOX_HVC_COOLIE + 0, 0, &vmbox_hvc_ops);
-	add_preferred_console("hvc", 0, NULL);
+	return 0;
+}
+
+static struct vmbox_console *create_vm_debug_console(void)
+{
+	uint32_t id;
+	uint32_t irq;
+	unsigned long ring_addr;
+	void *base;
+	struct vmbox_console *vc;
+
+	id = minos_hvc0(HVC_DC_GET_STAT);
+	if ((id & 0xffff0000) != 0xabcd0000)
+		return NULL;
+
+	irq = minos_hvc0(HVC_DC_GET_IRQ);
+	ring_addr = minos_hvc0(HVC_DC_GET_RING);
+
+	base = ioremap_cache(ring_addr, BUF_SIZE);
+	if (!base)
+		return NULL;
+
+	vc = kzalloc(sizeof(struct vmbox_console), GFP_KERNEL);
+	if (!vc)
+		return NULL;
+
+	vc->rx = (struct vm_ring *)base;
+	vc->tx = (struct vm_ring *)(base +
+			sizeof(struct vm_ring) + BUF_1_SIZE);
+
+	/*
+	 * here hvc_index need plus 1, the hvc0 is debug
+	 * console, then the vmbox console will start with
+	 * the index 1
+	 */
+	vc->vetrmno = VMBOX_HVC_COOLIE + hvc_index;
+	vc->id = hvc_index++;
+	vc->irq = irq;
+	vc->type = HVC_DEBUG_CONSOLE;
+	hvc_consoles[vc->id] = vc;
+	wmb();
+
+	return vc;
+}
+
+static void debug_console_write(struct console *con, const char *s, unsigned n)
+{
+	int send = 0;
+	struct vmbox_console *vc = hvc_consoles[0];
+	struct vm_ring *tx;
+
+	if (vc == NULL)
+		return;
+
+	tx = vc->tx;
+
+	if ((tx->widx - tx->ridx) == tx->size)
+		tx->ridx += n;
+
+	while (send < n)
+		tx->buf[VM_RING_IDX(tx->widx++, tx->size)] = s[send++];
+
+	mb();
+	minos_hvc0(HVC_DC_WRITE);
+}
+
+static int __init debug_console_setup(struct earlycon_device *device,
+		const char *opt)
+{
+	struct vmbox_console *vc = hvc_consoles[0];
+
+	if (vc == NULL)
+		vc = create_vm_debug_console();
+
+	device->con->write = debug_console_write;
+	return 0;
+}
+EARLYCON_DECLARE(vm_debug_con, debug_console_setup);
+OF_EARLYCON_DECLARE(vm_debug_con, "dbcon", debug_console_setup);
+
+static int __init vm_init_debug_console(void)
+{
+	struct vmbox_console *vc;
+
+	vc = hvc_consoles[0];
+	if (!vc)
+		vc = create_vm_debug_console();
+
+	pr_info("register vm debug console\n");
+	hvc_instantiate(VMBOX_HVC_COOLIE + vc->id,
+			vc->id, &vm_debug_hvc_ops);
 
 	return 0;
 }
-console_initcall(vmbox_hvc_console_init);
+
+/*
+ * for native vm there two type hvc
+ * 0 - is the debug console which is handled by hypervisor
+ * 1 - from 1 its vmbox console
+ */
+static int vm_console_init(void)
+{
+	/*
+	 * init the debug console then init the vmbox
+	 * console
+	 */
+	vm_init_debug_console();
+	vm_init_vmbox_console();
+
+	return 0;
+}
+console_initcall(vm_console_init);
