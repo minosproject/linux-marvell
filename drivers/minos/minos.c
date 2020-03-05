@@ -625,9 +625,10 @@ int mvm_zap_pmd_range(struct mmu_gather *tlb,
 		if (!(pmd_val(*pmd) && !pmd_table(*pmd)))
 			return 1;
 
-		pmd[0] = 0;
+		memset(pmd, 0, sizeof(pmd_t));
 #if defined(CONFIG_ARM) && !defined(CONFIG_ARM_LPAE)
 		pmd[1] = 0;
+		memset(pmd + 1, 0, sizeof(pmd_t));
 #endif
 		tlb_remove_pmd_tlb_entry(tlb, pmd, addr);
 		flush_pmd_entry(pmd);
