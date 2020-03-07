@@ -300,9 +300,13 @@ static irqreturn_t vm_event_handler(int irq, void *data)
 
 	if (!hwirq)
 		return IRQ_NONE;
-
-	if ((hwirq < MVM_EVENT_ID_BASE) || (hwirq >= MVM_EVENT_ID_END))
-		return IRQ_NONE;
+	/*
+	 * workaroud for raspberry pi3, since the rpi3's
+	 * irqchiq is not gic, the mapping role is not as
+	 * same as gic, so need find a way for all irq controller
+	 */
+	if (hwirq < MVM_EVENT_ID_BASE)
+		hwirq += MVM_EVENT_ID_BASE;
 
 	event = &vm_event_table[hwirq - MVM_EVENT_ID_BASE];
 	if (!event) {
@@ -322,12 +326,18 @@ static int unregister_vm_event(struct vm_device *vm, int irq)
 {
 	int virq;
 	struct vm_event *event;
+	int event_base;
+
+	/*
+	 * workaroud for raspberry pi3, since the rpi3's
+	 * irqchiq is not gic, the mapping role is not as
+	 * same as gic, so need find a way for all irq controller
+	 */
+	event_base = irq < MVM_EVENT_ID_BASE ? irq + MVM_EVENT_ID_BASE : irq;
 
 	pr_info("unregister irq-%d\n", irq);
-	if ((irq >= MVM_EVENT_ID_END) || (irq < MVM_EVENT_ID_BASE))
-		return -EINVAL;
 
-	event = &vm_event_table[irq - MVM_EVENT_ID_BASE];
+	event = &vm_event_table[event_base - MVM_EVENT_ID_BASE];
 	if (!event->ctx) {
 		pr_warn("event %d not register\n", irq);
 		return -ENODEV;
@@ -350,16 +360,22 @@ static int register_vm_event(struct vm_device *vm, int eventfd, int irq)
 {
 	int ret;
 	int virq;
+	int event_base;
 	struct eventfd_ctx *ctx;
 	struct vm_event *event;
 	struct file *eventfp;
 	char *name;
 
-	pr_info("register event-%d irq-%d\n", eventfd, irq);
-	if ((irq >= MVM_EVENT_ID_END) || (irq < MVM_EVENT_ID_BASE))
-		return -EINVAL;
+	/*
+	 * workaroud for raspberry pi3, since the rpi3's
+	 * irqchiq is not gic, the mapping role is not as
+	 * same as gic, so need find a way for all irq controller
+	 */
+	event_base = irq < MVM_EVENT_ID_BASE ? irq + MVM_EVENT_ID_BASE : irq;
 
-	event = &vm_event_table[irq - MVM_EVENT_ID_BASE];
+	pr_info("register event-%d irq-%d\n", eventfd, irq);
+
+	event = &vm_event_table[event_base - MVM_EVENT_ID_BASE];
 	if (event->ctx)
 		pr_warn("event alrady register\n");
 
