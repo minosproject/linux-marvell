@@ -518,7 +518,7 @@ static int __init vm_init_vmbox_console(void)
 		return -ENOMEM;
 	}
 
-	console_ring = ioremap_cache(reg.start, resource_size(&reg));
+	console_ring = ioremap(reg.start, resource_size(&reg));
 	if (!console_ring)
 		return -ENOMEM;
 
@@ -553,7 +553,7 @@ static struct vmbox_console *create_vm_debug_console(void)
 	irq = minos_hvc0(HVC_DC_GET_IRQ);
 	ring_addr = minos_hvc0(HVC_DC_GET_RING);
 
-	base = ioremap_cache(ring_addr, BUF_SIZE);
+	base = ioremap(ring_addr, BUF_SIZE);
 	if (!base)
 		return NULL;
 
