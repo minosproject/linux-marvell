@@ -3,6 +3,8 @@ menu "Minos"
 config MINOS
 	bool "Enable Minos Hypervisor driver"
 	default y
+	select HVC_DRIVER
+	select HVC_IRQ
 	---help---
 	  Enable support for Minos hyperviosr
 
