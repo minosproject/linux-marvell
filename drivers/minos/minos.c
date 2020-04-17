@@ -671,7 +671,8 @@ static int mvm_vm_mmap_common(struct vm_area_struct *vma, unsigned long phy, siz
 	vma->vm_flags &= ~(VM_MAYWRITE);
 	addr = vma->vm_start;
 
-	flush_cache_range(vma, vma->vm_start, vma->vm_end);
+	preempt_disable();
+
 	while (vma_size > 0) {
 		ptep = mvm_pmd_alloc(mm, addr);
 		if (!ptep)
@@ -693,6 +694,11 @@ static int mvm_vm_mmap_common(struct vm_area_struct *vma, unsigned long phy, siz
 
 		vma_size -= count;
 	}
+
+	wmb();
+	flush_tlb_mm(mm);
+
+	preempt_enable();
 
 	return 0;
 }
@@ -722,6 +728,8 @@ static int mvm_vm_mmap_common(struct vm_area_struct *vma, unsigned long phy, siz
 	pud = pud_offset(pgd, addr);
 	pmd = pmd_offset(pud, addr);
 
+	preempt_disable();
+
 	do {
 		pmd[0] = __pmd(mmap_base | PMD_TYPE_SECT | PMD_SECT_S |
 				PMD_SECT_AP_WRITE | PMD_SECT_AP_READ |
@@ -737,7 +745,10 @@ static int mvm_vm_mmap_common(struct vm_area_struct *vma, unsigned long phy, siz
 		pmd += 2;
 	} while (addr < end);
 
-	flush_cache_vmap(vma->vm_start, vma->vm_end);
+	wmb();
+	flush_tlb_mm(mm);
+
+	preempt_enable();
 
 	return 0;
 }
@@ -757,7 +768,7 @@ static int mvm_vm_mmap_common(struct vm_area_struct *vma, unsigned long phy, siz
 	vma->vm_flags &= ~(VM_MAYWRITE);
 	addr = vma->vm_start;
 
-	flush_cache_range(vma, vma->vm_start, vma->vm_end);
+	preempt_disable();
 
 	while (vma_size > 0) {
 		ptep = mvm_pmd_alloc(mm, addr);
@@ -783,7 +794,10 @@ static int mvm_vm_mmap_common(struct vm_area_struct *vma, unsigned long phy, siz
 		vma_size -= count;
 	}
 
-	flush_cache_vmap(vma->vm_start, vma->vm_end);
+	wmb();
+	flush_tlb_mm(mm);
+
+	preempt_enable();
 
 	return 0;
 }
